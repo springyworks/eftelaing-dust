@@ -54,9 +54,9 @@ export function pendingNotes(): number {
   return queue.length;
 }
 
-/** Queues a note and tries to hand it to the relay. Returns false when the text is empty. */
+/** Queues a note and tries to hand it to the relay. A rating alone (no text) is still worth relaying. Returns false when there is nothing to send. */
 export function queueNote(text: string, extra: { rating?: string; hints?: string[] } = {}): boolean {
-  const clean = text.trim().slice(0, 2000);
+  const clean = text.trim().slice(0, 2000) || (extra.rating ? "(rating only, no text)" : "");
   if (!clean) return false;
   const note: Note = { id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, t: new Date().toISOString(), text: clean, context: snapshot() };
   if (extra.rating) note.rating = extra.rating;

@@ -2,7 +2,7 @@ import { WaveMonitor, binauralCues } from "./audio";
 import { MaslowDiagram, MatrixDiagram, OsiDiagram, type MatrixClick } from "./diagrams";
 import { DEFAULT_PARAMS, LAYERS, NUM_LAYERS, PRESENTATION_KEYS, SCENARIOS, defaultMapping, type Dimension, type Params, type Scenario } from "./model";
 import { Exerciser } from "./exerciser";
-import { setSnapshot } from "./feedback";
+import { queueNote, setSnapshot } from "./feedback";
 import { proveLearning } from "./proof";
 import { Scope, TankView } from "./render";
 import { Simulation, type MemoryMode, type Vec3 } from "./sim";
@@ -186,6 +186,7 @@ setSnapshot(() => ({
   rms: Array.from(sim.rms, (v) => Number(v.toFixed(3))),
   stability: Array.from(sim.stability, (v) => Number(v.toFixed(3))),
   soundOn: audio.enabled,
+  learning: { memory: sim.memory, dopa: Number(sim.dopa.toFixed(2)), rewards: sim.rewards, links: Array.from({ length: NUM_LAYERS - 1 }, (_, l) => Number(sim.learned(l).toFixed(2))) },
 }));
 const exerciser = new Exerciser($("exerciser"), params, () => controls.syncAll());
 exerciser.setMixHook(() => audio.band?.dominant() ?? null);
@@ -273,6 +274,7 @@ function encourage(nice: boolean, btn: HTMLButtonElement): void {
   exerciser.cheer(nice);
   // The hormone shot: gates plasticity of the wiring between the layers, focused on the tank being watched.
   sim.reward(nice ? amount : -amount, selected);
+  queueNote(`[reward] ${nice ? "Nice" : "Try again"} x${streak} on L${selected + 1}: ${audio.band?.personalityInfo ?? "sound off"}`, { rating: nice ? "nice" : "tryagain" });
   const box = thumbs[selected]?.box;
   box?.classList.add("tank-glow");
   window.setTimeout(() => box?.classList.remove("tank-glow"), 600);
