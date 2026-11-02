@@ -150,6 +150,7 @@ export function buildVoicePanel(root: HTMLElement, deps: VoiceDeps): VoicePanel 
   };
 
   const diagnose = (f: VoiceFrame): string => {
+    if (f.level < 1e-6) return `digital silence from ${voice.info}: the browser gets no sound. Pick the right input in the browser's site settings or in pavucontrol (Input Devices, Recording tab), and unmute it`;
     if (f.level <= f.gate) return f.level > f.gate * 0.3 ? `too quiet (${f.db.toFixed(0)} dB, needs ${(20 * Math.log10(f.gate)).toFixed(0)} dB): sing closer or raise mic sensitivity` : "quiet";
     return `sound but no clear pitch (${(f.clarity * 100).toFixed(0)}%): hold one note, "aah" or "mmm"`;
   };
@@ -272,7 +273,7 @@ export function buildVoicePanel(root: HTMLElement, deps: VoiceDeps): VoicePanel 
         c.fillText(`L${l + 1}`, x - 8, h - 3);
       }
       const b = tempo.bpm();
-      meta.textContent = `beat lattice sync ${Math.round(deps.lattice.order * 100)}% at ${deps.bpm().toFixed(0)} bpm · your tempo ${b ? `${b.toFixed(0)} bpm` : "(need 5 onsets)"} · ${counts.notes} notes, ${counts.staccato} staccato, ${counts.hits} sticks`;
+      meta.textContent = `beat lattice sync ${Math.round(deps.lattice.order * 100)}% at ${deps.bpm().toFixed(0)} bpm · your tempo ${b ? `${b.toFixed(0)} bpm` : "(need 5 onsets)"} · ${counts.notes} notes, ${counts.staccato} staccato, ${counts.hits} sticks${voice.running ? ` · mic: ${voice.info}` : ""}`;
       deps.cube.draw(cube);
       const i = deps.cube.info();
       const top = i.beatSync.reduce((m, v, l) => (v > (i.beatSync[m] ?? 0) ? l : m), 0);

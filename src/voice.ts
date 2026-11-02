@@ -208,6 +208,14 @@ export class VoiceAnalyzer {
       }
       case "noise":
         if (level < gate * 0.7) this.state = "idle";
+        else if (voiced) {
+          this.legato++;
+          this.lastMidi = midi;
+          if (this.legato >= 8) {
+            this.peak = level;
+            startNote(midi);
+          }
+        } else this.legato = 0;
         break;
     }
     this.frame = { level, db: 20 * Math.log10(Math.max(level, 1e-5)), hz: voiced ? p.hz : 0, midi, clarity: p.clarity, state: this.state, midiNote: this.note, gate };
@@ -239,6 +247,7 @@ export class VoiceInput {
   onFrame: (f: VoiceFrame) => void = () => undefined;
   analyzer: VoiceAnalyzer | null = null;
   sensitivity = 2;
+  info = "";
   private ctx: AudioContext | null = null;
   private stream: MediaStream | null = null;
   private timer = 0;
@@ -255,11 +264,20 @@ export class VoiceInput {
     const an = ctx.createAnalyser();
     an.fftSize = ctx.sampleRate > 50000 ? 4096 : 2048;
     an.smoothingTimeConstant = 0;
-    ctx.createMediaStreamSource(stream).connect(an);
+    const src = ctx.createMediaStreamSource(stream);
+    src.connect(an);
+    // some browsers only pull a graph that reaches the destination; a silent branch keeps the capture alive
+    const mute = ctx.createGain();
+    mute.gain.value = 0;
+    an.connect(mute).connect(ctx.destination);
+    const track = stream.getAudioTracks()[0];
+    this.info = track ? `${track.label || "default input"} · ${ctx.sampleRate} Hz` : "no audio track";
+    track?.addEventListener("ended", () => (this.info += " · ENDED (device unplugged or taken away)"));
+    track?.addEventListener("mute", () => (this.info += " · muted by the system"));
     const az = new VoiceAnalyzer(ctx.sampleRate);
     az.sensitivity = this.sensitivity;
     this.analyzer = az;
-    void ctx.resume();
+    void ctx.resume().then(() => (this.info += ` · ${ctx.state}`));
     this.stream = stream;
     this.ctx = ctx;
     const buf = new Float32Array(an.fftSize);
