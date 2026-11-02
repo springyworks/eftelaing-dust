@@ -182,6 +182,9 @@ export class GpuSolver {
   private stepGroups: [GPUBindGroup, GPUBindGroup] | null = null;
   private opsGroups: [GPUBuffer, GPUBuffer] | null = null;
   private reading = false;
+  private submitted = 0;
+  /** Steps the graphics card has really finished (a readback of them came back); the speed test counts these, not the queued ones. */
+  completedSteps = 0;
   private csPack = new Float32Array(0);
   private cplPack = new Float32Array(0);
   private lpPack = new Float32Array(0);
@@ -374,6 +377,7 @@ export class GpuSolver {
       enc.copyBufferToBuffer(this.v, 0, sv, 0, bytes);
     }
     d.queue.submit([enc.finish()]);
+    this.submitted += f.steps;
     if (read) this.startRead();
   }
 
@@ -401,6 +405,7 @@ export class GpuSolver {
     if (!su || !sv) return;
     this.reading = true;
     const gen = this.gen;
+    const mark = this.submitted;
     void Promise.all([su.mapAsync(GPUMapMode.READ), sv.mapAsync(GPUMapMode.READ)])
       .then(() => {
         const a = new Float32Array(su.getMappedRange());
@@ -414,6 +419,7 @@ export class GpuSolver {
         }
         su.unmap();
         sv.unmap();
+        this.completedSteps = Math.max(this.completedSteps, mark);
         if (su === this.stageU) this.reading = false;
         if (gen === this.gen) this.onMirror?.();
       })

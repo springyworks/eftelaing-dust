@@ -582,7 +582,7 @@ export class Exerciser {
     this.updateStatus(true);
   }
 
-  private save(): void {
+  save(): void {
     try {
       localStorage.setItem(STORAGE_KEY, this.model.toJSON(this.specs.map((s) => s.key)));
     } catch {

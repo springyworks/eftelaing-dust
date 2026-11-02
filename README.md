@@ -1,3 +1,5 @@
+**Live demo: https://springyworks.github.io/eftelaing-dust/** · Repo: https://github.com/springyworks/eftelaing-dust
+
 Use type script -strict
 Ttile: " Eftelaing-dust"
 create a singel html with typescript in it, or choose to go evetual public via gihub.io ,(use cli gh commadn)  ;; it simulaties a combined model it combines osi-layers repersntatin and in apaprpallelala the maslov pyramid . the the  osi-layer;plus (7+3 Lyers) should ahve a detaild svg maxgraph diagram , and also the Maslov pyramid is drawn with maxgraph  , I wanto see them sisde by side and i wanbt realtime (webgpu?) simulations give the simulation buutons speed sliders options go prifessianl her at lest 5 impeortt realtime use-gui-elements and fire button help every with popup, man do the works 
@@ -64,6 +66,8 @@ Live: https://springyworks.github.io/eftelaing-dust/ (built with `npm run build`
 - **3D stack** (`src/stack3d.ts`): a card with the ten tanks as plates in an orthographic canvas-2D view (no WebGL). Plate image = wave field, rim thickness = amplitude, vertical lines = link coupling (sand memory) x recent in-phase coherence, dots run from the louder to the quieter layer. Drag to orbit, wheel to zoom, tap a plate to select and tickle it.
 - **Scratching plays music**: dragging through any tank also plays notes. The position along the tank picks a note of the current chord's scale, speed and height give the loudness, tank L1 plays the lead voice and every other tank its own choir voice, plus a dry sand rasp. The notes go out over MIDI too, and the brain picks up vocabulary from watching you play.
 - "rfti" in the original request was read as HRTF.
+- **Speed test and fallback** (`src/pacing.ts`): 1.5 s after load the app measures real WebGPU steps/s (readbacks that completed) and CPU steps/s, picks the faster solver, lowers Speed if even that is too slow, and tells you in a notice bar (with *Re-test speed*). Without WebGPU the CPU solver is the backup and the notice says so. A phone warning explains that the solver runs on one core and drains the battery. If the frame rate stays under 16 fps a governor lowers Speed, then the tank dimension, and says so.
+- **Share link** (`src/share.ts`): the blue *share link* at the top right copies one long URL (about 3.6 k characters, deflate + base64url in the `#s=` fragment) with all sliders and selects, the mic tuner level, the sand wiring, the band personality and your taste ratings. Opening it asks for confirmation, then replaces what that browser had learned. Links made on localhost point at the github.io demo. The *GitHub* link next to it opens the repo.
 
 ## Genre: dust-programming (crap-art)
 

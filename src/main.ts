@@ -11,6 +11,8 @@ import { BeatLattice, Groove } from "./beat";
 import { Tesseract } from "./tesseract";
 import { buildVoicePanel, type BeatPos } from "./voicepanel";
 import { GpuSolver } from "./gpu";
+import { decide, describe, deviceInfo } from "./pacing";
+import { consumeHash, loadSharedParams, makeLink } from "./share";
 import { Stack3D } from "./stack3d";
 import { progressionOf } from "./style";
 import { Simulation, type MemoryMode, type Vec3 } from "./sim";
@@ -23,9 +25,11 @@ function $(id: string): HTMLElement {
 }
 
 const params: Params = { ...DEFAULT_PARAMS };
+const sharedLayer = loadSharedParams(params);
+void consumeHash();
 const sim = new Simulation(params.dimension);
 const audio = new WaveMonitor();
-let selected = 8;
+let selected = sharedLayer ?? 8;
 
 const osi = new OsiDiagram($("osi"), (l) => select(l));
 const maslow = new MaslowDiagram($("maslow"));
@@ -203,15 +207,16 @@ const toast = document.createElement("div");
 toast.style.cssText = "position:fixed;left:50%;top:10px;transform:translateX(-50%);z-index:200;background:#1b2434;border:1px solid #5b8def;border-radius:8px;padding:6px 14px;font-size:13px;color:#dbe6ff;opacity:0;transition:opacity .4s;pointer-events:none";
 document.body.append(toast);
 let toastTimer = 0;
+function sayToast(text: string, ms = 5000): void {
+  toast.textContent = text;
+  toast.style.opacity = "1";
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => (toast.style.opacity = "0"), ms);
+}
 startRemote(params, {
   snapshot: () => ({ style: audio.band?.styleInfo ?? "", phrase: audio.band?.phraseInfo ?? "", chord: audio.chord, instruments: audio.band?.patchInfo ?? "", personality: audio.band?.personalityInfo ?? "", soundOn: audio.enabled, solver: sim.solver, voice: voicePanel.info(), beat: beatInfo(), learning: { memory: sim.memory, dopa: Number(sim.dopa.toFixed(2)), rewards: sim.rewards } }),
   applied: () => controls.syncAll(),
-  say: (text) => {
-    toast.textContent = text;
-    toast.style.opacity = "1";
-    window.clearTimeout(toastTimer);
-    toastTimer = window.setTimeout(() => (toast.style.opacity = "0"), 5000);
-  },
+  say: (text) => sayToast(text),
 });
 const exerciser = new Exerciser($("exerciser"), params, () => controls.syncAll());
 exerciser.setMixHook(() => audio.band?.dominant() ?? null);
@@ -461,19 +466,26 @@ let accumulator = 0;
 let frame = 0;
 let lastStatus = performance.now();
 let stepsSinceStatus = 0;
+let totalSteps = 0;
+let totalFrames = 0;
 
 function stepFrame(n: number): void {
   for (let i = 0; i < n; i++) sim.step(params);
   stepsSinceStatus += n;
+  totalSteps += n;
 }
 
 // WebGPU solver: created in the background; the select "Wave solver" switches between it and the CPU.
 let gpuSolver: GpuSolver | null = null;
 let gpuState = "WebGPU: starting";
-void GpuSolver.create().then((g) => {
-  gpuSolver = g;
-  gpuState = g ? `WebGPU ready (${g.adapterInfo})` : "no WebGPU (CPU solver)";
-});
+let gpuWhy = "";
+const gpuReady = GpuSolver.create()
+  .catch(() => null)
+  .then((g) => {
+    gpuSolver = g;
+    gpuWhy = Boolean((navigator as { gpu?: unknown }).gpu) ? "no usable graphics adapter" : "this browser has no WebGPU";
+    gpuState = g ? `WebGPU ready (${g.adapterInfo})` : `no WebGPU (${gpuWhy}), backup CPU solver`;
+  });
 function syncSolver(): void {
   const want = params.solver === "gpu" && gpuSolver !== null && !gpuSolver.lost;
   if (want && gpuSolver && sim.solver !== "gpu") sim.attachGpu(gpuSolver);
@@ -499,8 +511,109 @@ let wiringSavedAt = lastFrame;
 function saveWiring(nowMs: number): void {
   if (nowMs - wiringSavedAt < 20000) return;
   wiringSavedAt = nowMs;
+  writeWiring();
+}
+function writeWiring(): void {
   try { localStorage.setItem(WIRING_KEY, JSON.stringify({ mode: sim.memory, gain: Array.from(sim.gain), sand: sim.memory === "gain" ? "" : sim.exportSand() })); } catch { /* storage full or blocked */ }
 }
+
+// Notice bar under the header: what this device can do, what was chosen and why. The user is never left guessing.
+const noticeEl = $("notice");
+const noticeBody = $("notice-body");
+function showNotice(lines: string[], warn: boolean): void {
+  noticeBody.replaceChildren(...lines.map((t) => Object.assign(document.createElement("p"), { textContent: t })));
+  noticeEl.classList.toggle("warn", warn);
+  noticeEl.hidden = false;
+}
+$("notice-close").addEventListener("click", () => (noticeEl.hidden = true));
+$("notice-retest").addEventListener("click", () => void paceTest());
+
+// Speed test: runs the real app flat out (speed 12) once on the GPU solver and once on the CPU solver and counts the steps that
+// really finish; then it picks the faster one, lowers Speed if the device cannot keep up and says so.
+let pacing = false;
+const sleep = (ms: number): Promise<void> => new Promise((r) => window.setTimeout(r, ms));
+async function paceTest(): Promise<void> {
+  if (pacing) return;
+  pacing = true;
+  const dev = deviceInfo();
+  showNotice([`Testing how fast this ${dev.mobile ? "phone" : "device"} runs the ten tanks (a few seconds, the picture will race)...`], false);
+  const keep = { speed: params.speed, solver: params.solver, running: params.running };
+  try {
+    await gpuReady;
+    while (document.visibilityState !== "visible") await sleep(500);
+    params.running = true;
+    params.speed = 12;
+    const rate = async (mode: "gpu" | "cpu"): Promise<number | null> => {
+      params.solver = mode;
+      await sleep(500);
+      if (sim.solver !== mode) return null;
+      const g = gpuSolver;
+      const s0 = mode === "gpu" && g ? g.completedSteps : totalSteps;
+      const t0 = performance.now();
+      await sleep(1200);
+      const s1 = mode === "gpu" && g ? g.completedSteps : totalSteps;
+      return ((s1 - s0) * 1000) / (performance.now() - t0);
+    };
+    const gpu = gpuSolver && !gpuSolver.lost ? await rate("gpu") : null;
+    const cpu = (await rate("cpu")) ?? 0;
+    Object.assign(params, keep);
+    const r = decide(gpu, cpu, keep.speed);
+    params.solver = r.chosen;
+    params.speed = r.speed;
+    controls.syncAll();
+    syncToolbar();
+    showNotice(describe(r, dev, gpuWhy), r.verdict === "tight" || r.verdict === "slow" || dev.mobile || r.chosen === "cpu");
+    try { localStorage.setItem("eftelaing-dust.pace.v1", JSON.stringify({ at: Date.now(), gpu, cpu, chosen: r.chosen, speed: r.speed })); } catch { /* storage blocked */ }
+  } catch (e) {
+    Object.assign(params, keep);
+    showNotice([`The speed test failed (${e instanceof Error ? e.message : String(e)}); keeping the current settings.`], true);
+  } finally {
+    pacing = false;
+  }
+}
+window.setTimeout(() => void paceTest(), 1500);
+
+// Governor: when the picture stays under 16 frames per second for 3 s the app lowers Speed, then the tank dimension, and says so.
+let slowWindows = 0;
+let framesAtStatus = 0;
+function governor(fps: number): void {
+  if (pacing || !params.running || document.visibilityState !== "visible") {
+    slowWindows = 0;
+    return;
+  }
+  slowWindows = fps < 16 ? slowWindows + 1 : 0;
+  if (slowWindows < 6) return;
+  slowWindows = 0;
+  if (params.speed > 1) {
+    params.speed -= 1;
+    controls.syncAll();
+    showNotice([`This device is struggling (${fps.toFixed(0)} frames/s), so I lowered Speed to ${params.speed}. Lower it further or pick a smaller tank dimension if it still stutters.`], true);
+  } else if (params.dimension > 1) {
+    const d = (params.dimension - 1) as Dimension;
+    params.dimension = d;
+    onDimension(d);
+    controls.syncAll();
+    showNotice([`Still too slow at Speed 1, so I switched the tanks to ${d}D, which is much lighter.`], true);
+  } else showNotice(["This device cannot keep up even with the lightest setting (1D, Speed 1). Closing other tabs or plugging in may help."], true);
+}
+
+// Share link: the whole instrument as it is now, in the URL.
+const shareLink = $("share-link");
+shareLink.addEventListener("click", () => {
+  writeWiring();
+  audio.band?.brain.save();
+  exerciser.save();
+  makeLink(params, selected)
+    .then(async (url) => {
+      try {
+        await navigator.clipboard.writeText(url);
+        sayToast(`Share link copied (${(url.length / 1000).toFixed(1)} k characters). Anyone opening it gets this instrument as it is now.`, 7000);
+      } catch {
+        window.prompt("Copy this share link:", url);
+      }
+    })
+    .catch((e: unknown) => sayToast(`Could not make the link: ${e instanceof Error ? e.message : String(e)}`));
+});
 
 // Learning card: reward hormone level, the nine learned couplings (dashed line = innate 1.0), the sand coupling map and an A/B proof experiment.
 const learnRoot = $("learn");
@@ -627,6 +740,7 @@ function tick(): void {
   syncSolver();
   sim.flushGpu(params);
   frame++;
+  totalFrames++;
   if (frame % 2 === 0) {
     sim.observe(params, Math.min(0.2, (nowMs - lastObserve) / 1000));
     lastObserve = nowMs;
@@ -673,6 +787,8 @@ function tick(): void {
     const sps = (stepsSinceStatus * 1000) / (now - lastStatus);
     const gpu = `${sim.solver === "gpu" ? "GPU solver" : "CPU solver"} · ${gpuState}`;
     $("status").textContent = `${params.dimension}D tanks · ${sim.size} cells/layer · ${sps.toFixed(0)} steps/s · t=${sim.t} · ${gpu}`;
+    governor(((totalFrames - framesAtStatus) * 1000) / (now - lastStatus));
+    framesAtStatus = totalFrames;
     lastStatus = now;
     stepsSinceStatus = 0;
   }
