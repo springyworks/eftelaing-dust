@@ -56,23 +56,32 @@ export function chordFrom(rootPc: number, q: QualityKey): Chord {
 // Four chords of two bars each (an eight-bar loop). [root pitch class, quality when resolved, quality when tense].
 type Prog = readonly (readonly [number, QualityKey, QualityKey?])[];
 
-export type StyleId = "swing" | "bebop" | "fusion" | "funk" | "bossa" | "baroque";
-export const STYLE_IDS: readonly StyleId[] = ["swing", "bebop", "fusion", "funk", "bossa", "baroque"];
+export type StyleId = "brain" | "swing" | "bebop" | "fusion" | "funk" | "bossa" | "baroque";
+export const STYLE_IDS: readonly StyleId[] = ["brain", "swing", "bebop", "fusion", "funk", "bossa", "baroque"];
 
 export interface StyleDef {
   readonly id: StyleId;
   readonly name: string;
   readonly swing: number; // swing of the eighth-note grid at full skill, 0 straight .. 1 triplet
   readonly tempo: number; // multiplier of the tempo slider
-  readonly bass: "walk" | "funk" | "bossa" | "arp";
-  readonly comp: "charleston" | "chicken" | "bossa" | "none";
-  readonly drums: "swing" | "funk" | "bossa" | "fusion" | "none";
+  readonly bass: "walk" | "funk" | "bossa" | "arp" | "field";
+  readonly comp: "charleston" | "chicken" | "bossa" | "none" | "field";
+  readonly drums: "swing" | "funk" | "bossa" | "fusion" | "none" | "field";
   readonly lead: "swing" | "bebop" | "fusion" | "funk" | "theme" | "baroque";
   readonly lick: number; // chance that a bar is a phrase (lick / riff) instead of the plain layer-read theme
   readonly progs: readonly Prog[];
 }
 
 export const STYLES: Record<StyleId, StyleDef> = {
+  // No preset patterns at all: rhythm is read from each tank's own oscillation (every Mth crest of its measured
+  // frequency, placed where the crest really falls), accents from the sand bed, the chords measured from the layers'
+  // pitches. The progs below are only a fallback for code paths that ask for a table.
+  brain: {
+    id: "brain", name: "From the brain", swing: 0.45, tempo: 1, bass: "field", comp: "field", drums: "field", lead: "theme", lick: 0.3,
+    progs: [
+      [[2, "m9"], [7, "dom13"], [0, "maj9"], [9, "dom9"]],
+    ],
+  },
   swing: {
     id: "swing", name: "Swing", swing: 0.92, tempo: 1, bass: "walk", comp: "charleston", drums: "swing", lead: "swing", lick: 0.55,
     progs: [
@@ -189,7 +198,7 @@ export interface PersonalityData {
   runs?: Record<string, number>; // how often each kind of run was played
 }
 
-const zero = (v: number): Record<StyleId, number> => ({ swing: v, bebop: v, fusion: v, funk: v, bossa: v, baroque: v });
+const zero = (v: number): Record<StyleId, number> => ({ brain: v, swing: v, bebop: v, fusion: v, funk: v, bossa: v, baroque: v });
 
 export class Personality {
   seconds = 0;

@@ -200,7 +200,8 @@ const GROUPS: readonly Group[] = [
         key: "bandStyle",
         label: "Band style",
         options: [
-          { value: "auto", text: "Auto: the brain picks (layers + what you liked)" },
+          { value: "brain", text: "From the brain (no presets: its own sloshing and sand)" },
+          { value: "auto", text: "Auto: the brain picks a genre (layers + what you liked)" },
           { value: "swing", text: "Swing (walking bass, ride, triplet feel)" },
           { value: "bebop", text: "Bebop (fast, runs, enclosures)" },
           { value: "fusion", text: "Fusion (16th grooves, bursts, m11 colours)" },
@@ -208,7 +209,7 @@ const GROUPS: readonly Group[] = [
           { value: "bossa", text: "Bossa (straight, clave, soft)" },
           { value: "baroque", text: "Baroque (Bach: sequences, ornaments, canon)" },
         ],
-        help: "Each style is a complete way of playing: swing amount, tempo, bass pattern, comping rhythm, drum groove, the kind of lead phrases and its own chord progressions. Auto lets the brain choose every eight to sixteen bars from its layers (activity, peakiness, tension, upper-layer energy) and from what you liked before. The others lock one style.",
+        help: "From the brain (the default) uses no preset patterns at all: bass, keys and drums speak on the crests of each tank's own measured oscillation (placed where the crest really falls, drifting against the grid as the tank drifts), the sand bed accents them, the snare only speaks when neighbouring layers are in lock, and the chords are measured from the layers' pitches. The genre styles are complete preset ways of playing (swing amount, tempo, bass pattern, comping rhythm, drum groove, progressions); Auto lets the brain choose a genre every eight to sixteen bars.",
       },
       { kind: "slider", key: "bandRiffs", label: "Licks and riffs (0 plain theme)", min: 0, max: 1, step: 0.01, help: "How often the lead plays a phrase instead of the plain layer-read theme: fast bebop runs with enclosures, 16th-note fusion bursts, repeated funk riffs. The notes still come from the layers; this only decides how much of the time the soloist is busy." },
       { kind: "slider", key: "bandGroove", label: "Groove (ghost notes, syncopation)", min: 0, max: 1, step: 0.01, help: "Ghost snares, kick feathering, bass skips, anticipated chord stabs and 16th-note hat work. 0 is square and plain, 1 is a pocket full of small notes." },

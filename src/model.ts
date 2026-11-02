@@ -59,7 +59,7 @@ export type SpatialMode = "stereo" | "binaural";
 export type SolverMode = "gpu" | "cpu";
 export type AudioMode = "raw" | "brain" | "layer1" | "both";
 export type MidiOut = "off" | "on";
-export type BandStyle = "auto" | "swing" | "bebop" | "fusion" | "funk" | "bossa" | "baroque";
+export type BandStyle = "auto" | "brain" | "swing" | "bebop" | "fusion" | "funk" | "bossa" | "baroque";
 
 export interface Params {
   running: boolean;
@@ -132,13 +132,15 @@ export const DEFAULT_PARAMS: Params = {
   couplingDown: 0.3,
   instrumentDrive: 0.5,
   playerActivity: 0.3,
-  directorIntent: 0.3,
+  directorIntent: 0.5,
   dust: 0.1,
   pain: 0,
-  delight: 0,
-  interest: 0,
-  curiosity: 0,
-  ecstasy: 0,
+  // The felt life of L9 is on by default (about half way): a brain with no delight, interest or bliss at all leaves the
+  // upper layers dead and the top of the pyramid at zero, and there is nothing up there to tickle or to hear.
+  delight: 0.5,
+  interest: 0.5,
+  curiosity: 0.5,
+  ecstasy: 0.5,
   psychedelic: 0,
   context: "rest",
   volume: 0.5,
@@ -173,7 +175,7 @@ export const DEFAULT_PARAMS: Params = {
   bandHuman: 0.5,
   bandSwitch: 0.5,
   bandColor: 0.5,
-  bandStyle: "auto",
+  bandStyle: "brain",
   bandRiffs: 0.6,
   bandGroove: 0.6,
   bandLearn: 0.5,
@@ -205,14 +207,14 @@ export const SCENARIOS: readonly Scenario[] = [
     id: "cascade",
     title: "Bottom-up cascade",
     help: "A single impulse at the Physical layer travels upward through coupling only (no top-down). Watch the wave front climb L1 to L10.",
-    params: { ...DEFAULT_PARAMS, instrumentDrive: 0, playerActivity: 0, directorIntent: 0, dust: 0.02, reverseGain: 0, couplingUp: 0.9, couplingDown: 0, stabilization: 0.05, damping: 0.003 },
+    params: { ...DEFAULT_PARAMS, instrumentDrive: 0, playerActivity: 0, directorIntent: 0, delight: 0, interest: 0, curiosity: 0, ecstasy: 0, dust: 0.02, reverseGain: 0, couplingUp: 0.9, couplingDown: 0, stabilization: 0.05, damping: 0.003 },
     fireLayer: 0,
   },
   {
     id: "conductor",
     title: "Director conducts",
     help: "Only the Director (L10) plays; energy flows down through Consciousness and Player into the instrument. Director, players, instrument in one gesture.",
-    params: { ...DEFAULT_PARAMS, instrumentDrive: 0, playerActivity: 0, directorIntent: 1, reverseGain: 0, couplingUp: 0, couplingDown: 0.9, stabilization: 0.05, damping: 0.003, dust: 0.03 },
+    params: { ...DEFAULT_PARAMS, instrumentDrive: 0, playerActivity: 0, directorIntent: 1, delight: 0, interest: 0, curiosity: 0, ecstasy: 0, reverseGain: 0, couplingUp: 0, couplingDown: 0.9, stabilization: 0.05, damping: 0.003, dust: 0.03 },
     fireLayer: 9,
   },
   {

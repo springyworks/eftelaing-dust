@@ -25,7 +25,7 @@
 
 import { NUM_LAYERS, NUM_LEVELS, clamp, type BandStyle, type Params } from "./model";
 import type { Simulation } from "./sim";
-import { BOSSA_CLAVE, BOSSA_KICK, CHICKEN, FUNK_BASS, GHOST_SLOTS, KICKS, Personality, STRUMS, STYLES, STYLE_IDS, SWING_COMP, progressionCount, progressionOf, type Chord, type StyleId } from "./style";
+import { BOSSA_CLAVE, BOSSA_KICK, CHICKEN, FUNK_BASS, GHOST_SLOTS, KICKS, Personality, STRUMS, STYLES, STYLE_IDS, SWING_COMP, chordFrom, progressionCount, progressionOf, type Chord, type QualityKey, type StyleId } from "./style";
 import { GUITAR_VOICING, VOICING_NAMES, harmonicHeat, planChord, voiceLead } from "./harmony";
 import { makeWah } from "./fx";
 
@@ -197,7 +197,13 @@ export class Band {
   phraseInfo = "";
   private prog = 0;
   private styleSince = -99;
-  private lastPlayed: Record<StyleId, number> = { swing: -99, bebop: -99, fusion: -99, funk: -99, bossa: -99, baroque: -99 };
+  private lastPlayed: Record<StyleId, number> = { brain: -99, swing: -99, bebop: -99, fusion: -99, funk: -99, bossa: -99, baroque: -99 };
+  // "From the brain": the measured chord (with hysteresis votes) and one slosh-phase accumulator per voice role.
+  private brainCur: Chord = chordFrom(2, "m9");
+  private brainNext: Chord = chordFrom(2, "m9");
+  private brainCand: string | null = null;
+  private brainVotes = 0;
+  private readonly sloshPh = { bass: new Float64Array(NUM_LAYERS), kick: new Float64Array(NUM_LAYERS), ride: new Float64Array(NUM_LAYERS), snare: new Float64Array(NUM_LAYERS), comp: new Float64Array(NUM_LAYERS) };
   private fluent = 0.4;
   private phrase: Note16[] = [];
   private prevPhrase: Note16[] = [];
@@ -649,7 +655,7 @@ export class Band {
       }
     }
     const st = STYLES[this.style];
-    this.styleInfo = `${st.name} (${this.opts.style === "auto" ? "the brain's pick" : "locked"}) · progression ${this.prog + 1}/${progressionCount(this.style)} · swing ${Math.round(this.swingNow * 100)}% · ${Math.round(this.bpm)} bpm`;
+    this.styleInfo = `${st.name} (${this.opts.style === "auto" ? "the brain's pick" : this.style === "brain" ? "no presets" : "locked"}) · ${this.style === "brain" ? "chords measured, rhythm from the tanks" : `progression ${this.prog + 1}/${progressionCount(this.style)}`} · swing ${Math.round(this.swingNow * 100)}% · ${Math.round(this.bpm)} bpm`;
   }
 
   /** What the brain has become so far: stage, swing skill, lick vocabulary, mastery of the current style, what you liked. */
@@ -665,6 +671,7 @@ export class Band {
   private bestStyle(bar: number, f: Features): StyleId {
     const upper = f.rms.slice(3).reduce((a, b) => a + b, 0) / Math.max(1, f.rms.length - 3);
     const raw: Record<StyleId, number> = {
+      brain: 0.55 + 0.3 * f.health + 0.2 * upper, // its own voice, no genre tables: preferred when the stack is healthy
       swing: 0.8 - Math.abs(f.d - 0.4), // the human asked for jazz, so jazz is the home style
       bebop: 0.35 + 0.7 * f.d + 0.2 * f.health,
       fusion: 0.15 + 0.6 * upper + 0.3 * f.tension,
@@ -948,7 +955,7 @@ export class Band {
     this.phraseInfo = "";
     if (st.lead === "theme" || f.d < 0.08 || this.q(2) >= odds) return [];
     const cur = this.cur;
-    const next = progressionOf(this.style, this.prog, this.tension)[(this.chordIndex + 1) % 4] ?? cur;
+    const next = this.nextChordOf(cur);
     const deg = th?.deg ?? [];
     const vr = this.feel.variation;
     const centre = 62 + f.lx * 16 - (f.ly - 0.5) * 6 - (st.lead === "bebop" ? 2 : 0);
@@ -1148,6 +1155,121 @@ export class Band {
     this.harmonyNow = `${this.cur.name} · ${VOICING_NAMES[v]} voicing · heat ${Math.round(this.heat * 100)}%${this.harmonyInfo ? ` · ${this.harmonyInfo}` : ""}`;
   }
 
+  /** The chord the band is moving towards (for approaches and anticipations), by style. */
+  private nextChordOf(cur: Chord): Chord {
+    if (this.style === "brain") return this.brainNext;
+    return progressionOf(this.style, this.prog, this.tension)[(this.chordIndex + 1) % 4] ?? cur;
+  }
+
+  /**
+   * Measures the chord from the brain itself: every audible layer votes with its measured pitch class (weight = its
+   * activity; the bottom three layers also propose the root), and the chord quality with the best overlap wins. A new
+   * chord must win two chord boundaries in a row before the band moves (hysteresis), so a flicker never flaps it, and
+   * a silent brain keeps its last chord instead of resetting.
+   */
+  private measureChord(f: Features): void {
+    const hz = this.pitchHz;
+    const w = new Array<number>(12).fill(0);
+    let rootPc = -1;
+    let rootW = 0;
+    for (let l = 0; l < NUM_LAYERS; l++) {
+      const r = f.rms[l] ?? 0;
+      const pz = Number(hz[l]) || 0;
+      if (r < 0.02 || pz < 25 || pz > 4200) continue;
+      const midi = 69 + 12 * Math.log2(pz / 440);
+      const pc = ((Math.round(midi) % 12) + 12) % 12;
+      w[pc] = (w[pc] ?? 0) + r * (l < 3 ? 1.4 : 1);
+      if (l < 3 && r > rootW) {
+        rootW = r;
+        rootPc = pc;
+      }
+    }
+    if (rootPc < 0) {
+      rootW = 0;
+      for (let i = 0; i < 12; i++) {
+        if ((w[i] ?? 0) > rootW) {
+          rootW = w[i] ?? 0;
+          rootPc = i;
+        }
+      }
+    }
+    if (rootPc < 0) {
+      this.brainNext = this.brainCur;
+      return;
+    }
+    const cands: readonly QualityKey[] = ["m9", "m11", "dom9", "dom13", "maj9", "maj11", "m7b5"];
+    let bestQ: QualityKey = "m9";
+    let best = -Infinity;
+    for (const qk of cands) {
+      const c = chordFrom(rootPc, qk);
+      let score = 0;
+      for (const pc of c.scale) score += w[pc] ?? 0;
+      for (const iv of c.bass) score += (w[(rootPc + iv) % 12] ?? 0) * 0.8;
+      if (score > best) {
+        best = score;
+        bestQ = qk;
+      }
+    }
+    const curPc = ((this.brainCur.root % 12) + 12) % 12;
+    if (curPc === rootPc && this.brainCur.quality === bestQ) {
+      this.brainVotes = 0;
+      this.brainCand = null;
+      this.brainNext = this.brainCur;
+      return;
+    }
+    const cand = `${rootPc}:${bestQ}`;
+    this.brainVotes = cand === this.brainCand ? this.brainVotes + 1 : 1;
+    this.brainCand = cand;
+    this.brainNext = chordFrom(rootPc, bestQ);
+    if (this.brainVotes >= 2) {
+      this.brainCur = this.brainNext;
+      this.brainVotes = 0;
+      this.brainCand = null;
+    }
+  }
+
+  /**
+   * Rhythm straight from the physics: the next crest of layer l's own measured oscillation inside this sixteenth,
+   * thinned to about `perBeat` spoken crests per beat (the voice speaks on every Mth crest of the tank's own period).
+   * Returns the fraction (0..1) of the slot where the crest really falls, off the grid and drifting against the band
+   * as the tank's pitch drifts, else null. A quiet or still tank says nothing.
+   */
+  private crestIn(hold: Float64Array, l: number, stepsPer16: number, perBeat: number): number | null {
+    const sim = this.sim;
+    const wv = sim?.freq[l] ?? 0;
+    const adv = Math.max(1e-6, wv * stepsPer16);
+    const ph = hold[l] ?? 0;
+    hold[l] = ph + adv;
+    if (wv < 1e-4 || (sim?.rms[l] ?? 0) < 0.02) return null;
+    const per = 2 * Math.PI;
+    const M = Math.max(1, Math.round((adv * 4) / per / Math.max(0.2, perBeat)));
+    const k0 = Math.floor(ph / per);
+    const k1 = Math.floor((ph + adv) / per);
+    for (let kk = k0 + 1; kk <= k1; kk++) if (kk % M === 0) return (kk * per - ph) / adv;
+    return null;
+  }
+
+  /** The wave field of layer l sampled along the row through its energy centroid, frac 0..1 across the tank. */
+  private fieldAt(l: number, frac: number): number {
+    const sim = this.sim;
+    const u = sim?.u[l];
+    if (!sim || !u) return 0;
+    const y = sim.ny > 1 ? Math.round((sim.cen[l * 3 + 1] ?? 0.5) * (sim.ny - 1)) : 0;
+    const x = Math.round(clamp(frac, 0, 0.999) * (sim.nx - 1));
+    const zmid = Math.floor(sim.nz / 2);
+    return u[zmid * sim.nx * sim.ny + y * sim.nx + x] ?? 0;
+  }
+
+  /** How much sand is piled up (above the conserved mean) at that spot: the learned terrain as an accent, -1..1. */
+  private bedAt(l: number, frac: number): number {
+    const sim = this.sim;
+    const b = sim?.bed[l];
+    if (!sim || !b) return 0;
+    const y = sim.ny > 1 ? Math.round((sim.cen[l * 3 + 1] ?? 0.5) * (sim.ny - 1)) : 0;
+    const x = Math.round(clamp(frac, 0, 0.999) * (sim.nx - 1));
+    return clamp(((b[y * sim.nx + x] ?? 0.5) - 0.5) * 2, -1, 1);
+  }
+
   private play(t: number, stepLen: number, p: Params, f: Features, silent: boolean): void {
     this.tickHandover();
     const s = this.step;
@@ -1158,15 +1280,25 @@ export class Band {
     if (s % 8 === 0) this.chooseStyle(s >> 3, f);
     if (inChord === 0 || s === 0) {
       this.chordIndex = Math.floor(s / 16) % 4;
-      const chords = progressionOf(this.style, this.prog, f.tension);
-      const base = chords[this.chordIndex] ?? this.cur;
+      let base: Chord;
+      let nextBase: Chord;
+      if (this.style === "brain") {
+        // No progression table: the chord is measured from the layers' own pitches, with hysteresis.
+        this.measureChord(f);
+        base = this.brainCur;
+        nextBase = this.brainNext;
+      } else {
+        const chords = progressionOf(this.style, this.prog, f.tension);
+        base = chords[this.chordIndex] ?? this.cur;
+        nextBase = chords[(this.chordIndex + 1) % 4] ?? base;
+      }
       // The harmonic plan: layer 6 (and the slow arc of the form) decides how adventurous the chords are.
       this.heat = harmonicHeat(s >> 3, f.rms[5] ?? 0, f.tension, f.brain);
-      const plan = planChord(base, chords[(this.chordIndex + 1) % 4] ?? base, this.heat, [this.q(5), this.q(6), this.q(7)]);
+      const plan = planChord(base, nextBase, this.heat, [this.q(5), this.q(6), this.q(7)]);
       this.cur = plan.chord;
       this.approach = plan.approach;
       this.chordName = this.cur.name;
-      this.revoice(plan.tag);
+      this.revoice(this.style === "brain" ? [plan.tag, `${base.name} measured from the layers`].filter(Boolean).join(", ") : plan.tag);
       this.snapTones = [...new Set([...this.cur.bass, 2].map((i) => (((this.cur.root + i - 2) % 12) + 12) % 12))];
     }
     if (inChord === 8 && !silent) this.revoice(null);
@@ -1215,7 +1347,7 @@ export class Band {
       }
       return false;
     });
-    const nextChord = progressionOf(this.style, this.prog, f.tension)[(this.chordIndex + 1) % 4] ?? cur;
+    const nextChord = this.nextChordOf(cur);
     const st = STYLES[this.style];
     const groove = this.opts.groove;
     const fl = this.fluent;
@@ -1237,8 +1369,10 @@ export class Band {
       [2 * k + 1, t + stepLen * 0.5],
     ];
     const at = (tt: number, l: number, span = 1): number => Math.max(this.ctx.currentTime, tt + (this.q(l) - 0.5) * loose * span);
+    // Sim steps per sixteenth at the design rate (speed x 60 steps/s): converts the tanks' rad/step into real time.
+    const stepsPer16 = Math.max(0.5, p.speed * 60 * stepLen * 0.5);
     if (k === 0 && bar % 4 === 3) this.fillRolled = this.q(9) < (0.25 + 0.5 * groove * fl + 0.2 * f.d) * (0.5 + 0.8 * this.buildLevel);
-    const filling = this.fillRolled && f.d > 0.05 && st.drums !== "bossa" && st.drums !== "none" && bar % 4 === 3 && k >= 6;
+    const filling = this.fillRolled && f.d > 0.05 && st.drums !== "bossa" && st.drums !== "none" && st.drums !== "field" && bar % 4 === 3 && k >= 6;
 
     // Walking bass: one note per beat, always from the bottom layer's activity. A practised brain approaches the next
     // downbeat chromatically and drops in skip notes between the beats.
@@ -1271,6 +1405,32 @@ export class Band {
         this.bassPush = n;
         this.bassNote(tight(0), n, vel(68, 40), beatDur * 1.1);
       } else if ((q === 1 || q === 3) && this.q(2) < groove * fl * 0.35) this.bassNote(tight(0), this.lastBass, vel(38, 20), beatDur * 0.25);
+    }
+
+    // Bass straight from the tank (no pattern table): a note on every Mth crest of layer 1's own sloshing, placed where
+    // the crest really falls (off the grid, drifting as the tank drifts), the note chosen by the field's size and sign
+    // at that spot on the chord-tone ladder, and accented where the sand has piled up (the learned terrain).
+    if (st.bass === "field" && f.d > 0.02) {
+      for (const [i, tt] of subs) {
+        const fr = this.crestIn(this.sloshPh.bass, 0, stepsPer16, (1 + 0.8 * groove) * (0.55 + 0.9 * this.buildLevel));
+        if (fr === null) continue;
+        const pos = (i + fr) / 16;
+        const fv = this.fieldAt(0, pos);
+        const r0 = Math.max(1e-6, this.sim?.rms[0] ?? 0);
+        let n: number;
+        if (k >= 6 && this.q(1) < 0.5) {
+          n = nextChord.root + (fv >= 0 ? 1 : -1); // lean into the coming chord
+        } else {
+          const ladder = [0, ...cur.bass];
+          const idx = Math.min(ladder.length - 1, Math.floor((Math.abs(fv) / (2.2 * r0)) * ladder.length));
+          n = cur.root + (ladder[idx] ?? 0) - (fv < 0 && idx === 0 ? 12 : 0);
+        }
+        while (n > 55) n -= 12;
+        while (n < 26) n += 12;
+        this.lastBass = n;
+        const acc = Math.max(0, this.bedAt(0, pos));
+        this.bassNote(Math.max(this.ctx.currentTime, tt + fr * stepLen * 0.5), n, Math.round(clamp(vel(44 + 26 * Math.min(1, Math.abs(fv) / (1.5 * r0)), 20) + 14 * acc, 1, 127)), beatDur * 0.5);
+      }
     }
 
     // Funk and fusion bass: a 16th-note pattern on the one, with octave pops, fifths, flat sevens and ghost notes.
@@ -1324,7 +1484,7 @@ export class Band {
     }
 
     // Funk, fusion and bossa grooves with kick and snare, played on the sixteenth grid.
-    if (f.d > 0.02 && st.drums !== "swing" && st.drums !== "none") {
+    if (f.d > 0.02 && st.drums !== "swing" && st.drums !== "none" && st.drums !== "field") {
       const kp = KICKS[this.kickPat] ?? "";
       for (const [i, tt] of subs) {
         const ghostOk = GHOST_SLOTS.includes(i) && this.q(6) < groove * (0.25 + 0.5 * fl);
@@ -1357,6 +1517,23 @@ export class Band {
       }
     }
 
+    // Drums from the physics (no pattern tables): the ride rides layer 2's own crests, the kick layer 1's, each hit
+    // placed where the crest really falls; the snare belongs to layer 3 and only speaks when its lock to the layer
+    // above is at or over the stack's average (the synchroniser as a drummer), and the sand bed accents the kick.
+    if (st.drums === "field" && f.d > 0.02) {
+      const lkf = this.sim?.lock;
+      const lockAvg = lkf && lkf.length > 0 ? lkf.reduce((a, b) => a + b, 0) / lkf.length : 0;
+      for (const [i, tt] of subs) {
+        const t16 = (frac: number): number => Math.max(this.ctx.currentTime, tt + frac * stepLen * 0.5);
+        const rf = this.crestIn(this.sloshPh.ride, 1, stepsPer16, (2 + 1.6 * groove) * (0.55 + 0.9 * this.buildLevel));
+        if (rf !== null) this.rideHit(t16(rf), Math.round(clamp(20 + 26 * Math.min(1, (this.sim?.rms[1] ?? 0) * 4) + 20 * f.d, 1, 127)), 0.35);
+        const kf = this.crestIn(this.sloshPh.kick, 0, stepsPer16, 0.8 + 0.5 * groove);
+        if (kf !== null) this.kick(t16(kf), Math.round(clamp(46 + 30 * f.d + 18 * Math.max(0, this.bedAt(0, (i + kf) / 16)), 1, 127)));
+        const sf = this.crestIn(this.sloshPh.snare, 2, stepsPer16, 0.7 + 0.6 * groove);
+        if (sf !== null && (lkf?.[2] ?? 0) >= lockAvg) this.snare(t16(sf), Math.round(clamp(26 + 42 * Math.min(1, (this.sim?.rms[2] ?? 0) * 4), 1, 127)));
+      }
+    }
+
     // Comping. The chord is the voice-led one of the harmonic plan (cv); the last two beats of a chord may belong to an
     // approach chord. Rhythms: a swing pattern (charleston and others), chicken-scratch 16ths, the bossa clave, or, when the
     // keys are the guitar, a strum pattern with down-strums, up-strums and muted chops. Layer 5 picks the pattern.
@@ -1370,7 +1547,20 @@ export class Band {
     const bpat = STRUMS[(this.strumPat + (bar % 4 === 3 ? 3 : 0)) % STRUMS.length] ?? "";
     // A real strummer never hits the strings at exactly the same speed twice: jitter the strum time per stroke.
     const human = (base: number): number => base * (0.65 + 0.7 * this.q(3));
-    if (guitar && f.d > 0.05) {
+    if (st.comp === "field") {
+      // Keys from the physics: a stab on layer 4's own crests (still the voice-led chord, so the harmony moves
+      // smoothly), louder where its field is big and where its sand has piled up. No pattern strings anywhere.
+      if (f.d > 0.03) {
+        for (const [i, tt] of subs) {
+          const cf = this.crestIn(this.sloshPh.comp, 3, stepsPer16, (0.9 + 0.8 * groove) * (0.4 + 0.6 * dens) * (0.55 + 0.9 * this.buildLevel));
+          if (cf === null) continue;
+          const pos = (i + cf) / 16;
+          const m = Math.min(1, Math.abs(this.fieldAt(3, pos)) / Math.max(1e-6, 1.5 * (this.sim?.rms[3] ?? 0)));
+          const acc = Math.max(0, this.bedAt(3, pos));
+          this.comp(Math.max(this.ctx.currentTime, tt + cf * stepLen * 0.5), cv, Math.round(clamp(cvel(28 + 26 * m, 20) + 14 * acc, 1, 127)), beatDur * (0.25 + 0.35 * m), f.crest < 0.3 ? 3 : 4);
+        }
+      }
+    } else if (guitar && f.d > 0.05) {
       for (const [i, tt] of subs) {
         const ch = bpat[i];
         const alive = this.q(3) < 0.55 + 0.45 * Math.min(1, dens);
