@@ -372,6 +372,7 @@ export class Simulation {
 
   // Adds a gaussian bump around a normalised position into the given field.
   private bump(layer: number, isV: boolean, pos: Vec3, sigma: number, amp: number): void {
+    if (this.muted[layer]) return; // a switched-off layer takes no energy from any source: drives, fire, or scratch
     const { nx, ny, nz } = this;
     const cx = pos[0] * (nx - 1);
     const cy = ny > 1 ? pos[1] * (ny - 1) : 0;
@@ -421,6 +422,7 @@ export class Simulation {
   }
 
   private standing(layer: number, amp: number): void {
+    if (this.muted[layer]) return;
     const { nx, ny, nz } = this;
     if (this.gpu) {
       this.pushOp({ layer, isV: true, kind: 1, amp, cx: 0, cy: 0, cz: 0, inv: 0, x0: 0, x1: 0, y0: 0, y1: 0, z0: 0, z1: 0 });

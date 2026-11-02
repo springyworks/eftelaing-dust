@@ -1420,12 +1420,14 @@ export class Band {
       else this.choirNote(a.layer, t, this.layerNote(a.layer, cur, f), Math.round(clamp(58 + a.mag * 14, 1, 127)), beatDur * 0.9);
     }
 
-    // Choir: on its own beat of the bar every layer may play a chord tone from its measured pitch.
+    // Choir: on its own beat of the bar every layer may play a chord tone from its measured pitch. Gated on that
+    // layer's own measured activity, not just the brain-share slider, so a genuinely silent (or switched-off) layer
+    // stays silent instead of still singing on the brain-share setting alone.
     if (!off && f.brain > 0) {
       for (let l = 1; l < NUM_LAYERS; l++) {
         if ((beat + l) % 4 !== 0) continue;
         const r = f.rms[l] ?? 0;
-        if (this.q(l) > clamp((0.2 + 1.1 * r) * f.brain, 0, 0.95)) continue;
+        if (r < 0.03 || this.q(l) > clamp((0.2 + 1.1 * r) * f.brain, 0, 0.95)) continue;
         this.choirNote(l, jit(l), this.layerNote(l, cur, f), Math.round(clamp(28 + 56 * r, 1, 127)), beatDur * 1.6);
       }
     }
