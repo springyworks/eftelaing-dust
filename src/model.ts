@@ -104,6 +104,10 @@ export interface Params {
   bandKeys: number;
   bandLead: number;
   bandDrums: number;
+  bandVariation: number; // how much the themes develop: ornaments, answers, rhythm changes (0.5 = as designed)
+  bandHuman: number; // 0 = machine-exact timing and dynamics, 1 = loose, human
+  bandSwitch: number; // how often an instrument is swapped (0 = never), swaps are always slow handovers
+  bandColor: number; // harmonic colour: 0 sweet and resolved, 0.5 as the brain feels it, 1 tense and altered
   midiOut: MidiOut; // also send the band as MIDI to the first Web MIDI output
   swing: number; // 0 = plucks sound immediately, >0 = quantised to a swung eighth-note grid
 }
@@ -155,10 +159,14 @@ export const DEFAULT_PARAMS: Params = {
   bandKeys: 0.7,
   bandLead: 0.7,
   bandDrums: 0.7,
+  bandVariation: 0.5,
+  bandHuman: 0.5,
+  bandSwitch: 0.5,
+  bandColor: 0.5,
 };
 
 // Settings that describe how the human sees and hears the instrument; scenarios leave them alone.
-export const PRESENTATION_KEYS = ["volume", "alcCeiling", "listen", "fmDepth", "spikeSens", "projection", "spatial", "width", "reverb", "jazz", "swing", "audioMode", "tempo", "midiOut", "bandBrain", "rawLevel", "bandLevel", "bandDensity", "bandChoir", "bandBass", "bandKeys", "bandLead", "bandDrums", "matrixView"] as const;
+export const PRESENTATION_KEYS = ["volume", "alcCeiling", "listen", "fmDepth", "spikeSens", "projection", "spatial", "width", "reverb", "jazz", "swing", "audioMode", "tempo", "midiOut", "bandBrain", "rawLevel", "bandLevel", "bandDensity", "bandChoir", "bandBass", "bandKeys", "bandLead", "bandDrums", "bandVariation", "bandHuman", "bandSwitch", "bandColor", "matrixView"] as const;
 
 export interface Scenario {
   readonly id: string;

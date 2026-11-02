@@ -181,6 +181,10 @@ const GROUPS: readonly Group[] = [
       { kind: "slider", key: "bandKeys", label: "Keys level", min: 0, max: 1, step: 0.01, help: "How present the comping piano is." },
       { kind: "slider", key: "bandLead", label: "Lead level", min: 0, max: 1, step: 0.01, help: "How present the melody line is." },
       { kind: "slider", key: "bandDrums", label: "Ride and hat level", min: 0, max: 1, step: 0.01, help: "How present the ride cymbal and foot hi-hat are." },
+      { kind: "slider", key: "bandVariation", label: "Variation (themes develop)", min: 0, max: 1, step: 0.01, help: "How much the tune develops: passing notes, shifted phrases, extra answers, rhythm slots that join or drop out. 0 plays the layer-read theme exactly, 1 keeps reinventing it. The notes still come from the layers, this only widens how far they wander." },
+      { kind: "slider", key: "bandHuman", label: "Human feel (0 machine)", min: 0, max: 1, step: 0.01, help: "0 = machine-exact timing and equal velocities (the mechanical sound). 1 = loose, laid-back and breathing: timing wanders with the wave fields, velocities swell and fade, the lead sits a little behind the beat." },
+      { kind: "slider", key: "bandSwitch", label: "Instrument changes (0 never)", min: 0, max: 1, step: 0.01, help: "How often a voice may swap its instrument. The new instrument is read from the driving layer, then handed over slowly: the old one fades out while the new one fades in over two bars, one voice at a time, at phrase boundaries. 0 freezes the instruments." },
+      { kind: "slider", key: "bandColor", label: "Harmonic colour (sweet → tense)", min: 0, max: 1, step: 0.01, help: "Biases the chords the brain picks from its Maslow fulfilment. 0.5 = as the brain feels it. Lower: resolved sweet chords (Cmaj9, A13). Higher: tense altered chords (Cmaj9#11, A7b9b13)." },
       { kind: "slider", key: "tempo", label: "Band tempo (bpm)", min: 60, max: 160, step: 1, help: "Base tempo of the band. A busy bottom layer pushes it up to about 6% faster, a quiet one slows it by the same amount. Swing is set in the jazz group." },
       {
         kind: "select",

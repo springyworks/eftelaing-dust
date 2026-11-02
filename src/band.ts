@@ -140,6 +140,8 @@ interface Theme {
 }
 
 const lerp1 = (a: number, b: number, k: number): number => a + (b - a) * k;
+type VoiceKey = "bass" | "comp" | "lead" | "ride";
+const HANDOVER_SLOTS = 16; // two bars
 const CHOIR_CH = [3, 4, 5, 6, 7, 8, 10, 11, 12] as const; // MIDI channels of L2..L10 (channel 10 is the drums)
 
 export class Band {
@@ -170,9 +172,20 @@ export class Band {
   themeInfo = "";
   private readonly choir: Spat[]; // one per layer; index 0 is unused
   private lv = { bass: 1, comp: 1, lead: 1, ride: 1, choir: 0 };
-  // Current instrument per voice and the layer each was read from.
+  // Current instrument per voice and the layer each was read from. A swap is a slow handover (prev fades out while cur
+  // fades in, x runs 0..1), never a hard cut; `last` is the bar of the previous swap.
   private patch = { bass: 0, comp: 0, lead: 0, ride: 0 };
   private patchLayer = { bass: 0, comp: 3, lead: 0, ride: 5 };
+  private ho: Record<VoiceKey, { prev: number; x: number; last: number }> = {
+    bass: { prev: 0, x: 1, last: -99 },
+    comp: { prev: 0, x: 1, last: -99 },
+    lead: { prev: 0, x: 1, last: -99 },
+    ride: { prev: 0, x: 1, last: -99 },
+  };
+  private feel = { variation: 0.5, human: 0.5, switchRate: 0.5 };
+  // Smoothed loudness of every voice, so the exerciser can tell which one dominates the mix.
+  private readonly loud: Record<VoiceKey | "choir", number> = { bass: 0, comp: 0, lead: 0, ride: 0, choir: 0 };
+  private choirRatio: number[] = Array.from({ length: NUM_LAYERS }, () => 2);
   private choirPatch: number[] = Array.from({ length: NUM_LAYERS }, () => 0);
   private choirSent: number[] = Array.from({ length: NUM_LAYERS }, () => -1);
   private brainNow = 1;
@@ -229,7 +242,7 @@ export class Band {
     const d = lerp(rms[0] ?? 0, mean(rms), 0.4 * brain);
     let ful = 0;
     for (let m = 0; m < NUM_LEVELS; m++) ful += sim.fulfilment[m] ?? 0;
-    this.tension = clamp(1 - ful / NUM_LEVELS, 0, 1);
+    this.tension = clamp(1 - ful / NUM_LEVELS + (p.bandColor - 0.5), 0, 1);
     let stab = 0;
     for (let l = 0; l < NUM_LAYERS; l++) stab += sim.stability[l] ?? 1;
     const health = clamp(0.5 * sim.alignment + 0.5 * (stab / NUM_LAYERS), 0, 1);
@@ -251,6 +264,8 @@ export class Band {
     this.pitchHz = pitchHz;
     this.sim = sim;
     this.lv = { bass: p.bandBass, comp: p.bandKeys, lead: p.bandLead, ride: p.bandDrums, choir: p.bandChoir * brain };
+    this.feel = { variation: p.bandVariation, human: p.bandHuman, switchRate: p.bandSwitch };
+    for (const k of Object.keys(this.loud) as (keyof typeof this.loud)[]) this.loud[k] *= 0.992;
     // Layer 1 pushes the tempo a little; with the brain share up, the Director (L10) conducts it.
     const push = lerp(rms[0] ?? 0, rms[9] ?? 0, 0.6 * brain);
     const target = p.tempo * (0.94 + 0.12 * push);
@@ -384,16 +399,65 @@ export class Band {
     return this.brainNow < 0.3 ? 0 : l;
   }
 
-  private setPatch(key: "bass" | "comp" | "lead" | "ride", layer: number): void {
+  /**
+   * A musician swaps instruments between phrases, one at a time, and lets the old sound die away while the new one comes
+   * in. The target is read from the driving layer; it only counts when the signature lies clearly inside another patch
+   * (no flicker at a border), enough bars have passed since the last swap (Instrument changes slider) and, if the voice is
+   * being played, the swap starts as a two-bar crossfade. A silent voice swaps at once.
+   */
+  private setPatch(key: VoiceKey, layer: number, bar: number): void {
     const table = key === "bass" ? BASS_PATCHES : key === "comp" ? KEYS_PATCHES : key === "lead" ? LEAD_PATCHES : RIDE_PATCHES;
     const l = this.src(layer);
-    const idx = Math.floor(this.sig(l) * table.length);
-    const ch = key === "ride" ? CH.drums : CH[key];
-    if (idx !== this.patch[key] && key !== "ride") this.program(ch, table[idx]?.gm ?? 0);
-    this.patch[key] = idx;
     this.patchLayer[key] = l;
+    const first = this.ho[key].last < -50;
+    const s = this.sig(l) * table.length;
+    let idx = Math.floor(s);
+    const frac = s - idx;
+    const cur = this.patch[key];
+    if (!first && idx !== cur && (frac < 0.2 || frac > 0.8)) idx = cur;
+    const h = this.ho[key];
+    const gap = Math.round(24 * (1 - this.feel.switchRate));
+    const allowed = this.feel.switchRate > 0.02 && bar - h.last >= gap;
+    const quiet = this.lv[key] < 0.05;
+    if (idx !== cur && (first || quiet || allowed)) {
+      h.prev = cur;
+      h.x = first || quiet ? 1 : 0;
+      h.last = bar;
+      this.patch[key] = idx;
+      if (h.x >= 1 && key !== "ride") this.program(CH[key], table[idx]?.gm ?? 0);
+    } else if (first) h.last = bar;
     const label = { bass: "Bass", comp: "Keys", lead: "Lead", ride: "Ride" }[key];
-    this.voices[key].name = `${label} · ${table[idx]?.name ?? ""}`;
+    this.voices[key].name = `${label} · ${table[this.patch[key]]?.name ?? ""}`;
+  }
+
+  /** The patches sounding for a voice right now with their gains: one, or two during a handover (equal power). */
+  private mix(key: VoiceKey): readonly (readonly [number, number])[] {
+    const h = this.ho[key];
+    const cur = this.patch[key];
+    if (h.x >= 1) return [[cur, 1]];
+    const a = h.x * Math.PI * 0.5;
+    return [
+      [h.prev, Math.cos(a)],
+      [cur, Math.sin(a)],
+    ];
+  }
+
+  /** Remembers how loud a voice really is (its gain scale is folded in) for dominant() / quietest(). */
+  private heard(key: VoiceKey | "choir", vel: number, gain: number): void {
+    this.loud[key] = Math.max(this.loud[key], (vel / 127) * gain);
+  }
+
+  /** Name of the slider of the voice that currently dominates the mix, and of the one that is most buried. */
+  dominant(): { loud: string; quiet: string } {
+    const names = { bass: "bandBass", comp: "bandKeys", lead: "bandLead", ride: "bandDrums", choir: "bandChoir" } as const;
+    const ks = Object.keys(names) as (keyof typeof names)[];
+    let hi = ks[0] as keyof typeof names;
+    let lo = hi;
+    for (const k of ks) {
+      if (this.loud[k] > this.loud[hi]) hi = k;
+      if (this.loud[k] < this.loud[lo]) lo = k;
+    }
+    return { loud: names[hi], quiet: names[lo] };
   }
 
   private program(ch: number, gm: number): void {
@@ -405,7 +469,12 @@ export class Band {
     const nm = (t: readonly Patch[], i: number): string => t[i]?.name ?? "";
     const L = (l: number): string => `L${l + 1}`;
     const pl = this.patchLayer;
-    this.patchInfo = `bass ${nm(BASS_PATCHES, this.patch.bass)} (${L(pl.bass)}) · keys ${nm(KEYS_PATCHES, this.patch.comp)} (${L(pl.comp)}) · lead ${nm(LEAD_PATCHES, this.patch.lead)} (${L(pl.lead)}) · ride ${nm(RIDE_PATCHES, this.patch.ride)} (${L(pl.ride)})`;
+    const one = (key: VoiceKey, t: readonly Patch[]): string => {
+      const h = this.ho[key];
+      const to = nm(t, this.patch[key]);
+      return h.x < 1 ? `${nm(t, h.prev)}→${to} ${Math.round(h.x * 100)}%` : to;
+    };
+    this.patchInfo = `bass ${one("bass", BASS_PATCHES)} (${L(pl.bass)}) · keys ${one("comp", KEYS_PATCHES)} (${L(pl.comp)}) · lead ${one("lead", LEAD_PATCHES)} (${L(pl.lead)}) · ride ${one("ride", RIDE_PATCHES)} (${L(pl.ride)})`;
   }
 
   private prepareBar(bar: number, f: Features): void {
@@ -426,16 +495,21 @@ export class Band {
       }
       this.themes.B = this.readTheme("B", lead, lead === 0);
     }
+    // One voice changes instrument at a time, at different bars of the eight-bar form (and each swap is a slow handover).
     const th = this.themeFor(bar);
-    // The rhythm section changes instrument once per eight-bar form; the soloist changes with every theme.
-    if (b === 0 || bar === 0) {
-      this.setPatch("bass", 0);
-      this.setPatch("comp", 3);
-      this.setPatch("ride", 5);
+    if (bar === 0 || this.ho.bass.last < -50) {
+      this.setPatch("bass", 0, bar);
+      this.setPatch("comp", 3, bar);
+      this.setPatch("ride", 5, bar);
+      this.setPatch("lead", th?.layer ?? 0, bar);
     }
-    if (b % 4 === 0 || bar === 0) this.setPatch("lead", th?.layer ?? 0);
+    if (b === 2) this.setPatch("bass", 0, bar);
+    if (b === 6) this.setPatch("comp", 3, bar);
+    if (b === 3) this.setPatch("ride", 5, bar);
+    if (b === 0 || b === 4) this.setPatch("lead", th?.layer ?? 0, bar);
     this.describePatches();
-    this.answer = bar % 2 === 1 && th ? this.readTheme(th.name + "'", th.layer, th.layer === 0 && th.name === "B") : null;
+    const answerOdds = clamp(0.25 + 1.5 * this.feel.variation, 0, 1);
+    this.answer = bar % 2 === 1 && th && this.q(2) < answerOdds ? this.readTheme(th.name + "'", th.layer, th.layer === 0 && th.name === "B") : null;
     this.themeInfo = `${th?.name ?? "-"}${this.answer ? "'" : ""} (${th?.line ?? "-"}) steps ${th?.deg.join(" ") ?? ""} · sync ${th?.hit.map((h) => (h ? "x" : ".")).join("") ?? ""}`;
   }
 
@@ -447,7 +521,25 @@ export class Band {
     out.send([0x80 | ch, note, 0], ms + dur * 1000);
   }
 
+  /** Advances every running instrument handover by one grid slot; the MIDI program change goes out half way through. */
+  private tickHandover(): void {
+    let active = false;
+    for (const key of ["bass", "comp", "lead", "ride"] as const) {
+      const h = this.ho[key];
+      if (h.x >= 1) continue;
+      const before = h.x;
+      h.x = Math.min(1, h.x + 1 / HANDOVER_SLOTS);
+      if (before < 0.5 && h.x >= 0.5 && key !== "ride") {
+        const table = key === "bass" ? BASS_PATCHES : key === "comp" ? KEYS_PATCHES : LEAD_PATCHES;
+        this.program(CH[key], table[this.patch[key]]?.gm ?? 0);
+      }
+      active = true;
+    }
+    if (active && this.step % 4 === 0) this.describePatches();
+  }
+
   private play(t: number, stepLen: number, p: Params, f: Features, silent: boolean): void {
+    this.tickHandover();
     const s = this.step;
     const inChord = s % 16;
     const beat = inChord >> 1;
@@ -499,10 +591,13 @@ export class Band {
     });
     const nextChord = progression(f.tension)[(this.chordIndex + 1) % 4] ?? cur;
     const beatDur = 60 / this.bpm;
-    const vel = (base: number, span: number): number => Math.round(clamp(base + span * f.d + (this.q(0) - 0.5) * 10, 1, 127));
+    const hum = this.feel.human * 2; // 1 = as designed, 0 = machine-exact
+    const vel = (base: number, span: number): number => Math.round(clamp(base + span * f.d + ((this.q(0) - 0.5) * 10 + Math.sin(s * 0.19) * 5) * hum, 1, 127));
     const dens = p.bandDensity * 2;
-    const loose = (0.3 + p.dust * 3) * 0.012 * (1.7 - f.health);
+    const loose = (0.3 + p.dust * 3) * 0.012 * (1.7 - f.health) * hum;
     const jit = (l: number): number => Math.max(this.ctx.currentTime, t + (this.q(l) - 0.5) * loose);
+    const tight = (l: number): number => Math.max(this.ctx.currentTime, t + (this.q(l) - 0.5) * loose * 0.4);
+    const laidBack = 0.022 * this.feel.human; // the soloist sits a little behind the beat
     const k = s % 8; // slot of the bar
 
     // Walking bass: one note per beat, always from the bottom layer's activity.
@@ -518,7 +613,7 @@ export class Band {
       while (n > 55) n -= 12;
       while (n < 28) n += 12;
       this.lastBass = n;
-      this.bassNote(t, n, vel(62, 40), beatDur * 0.92);
+      this.bassNote(tight(0), n, vel(62, 40), beatDur * 0.92);
     }
 
     // Ride cymbal: quarter notes plus the swung skip beat, loosened by Dust; foot hi-hat on 2 and 4.
@@ -557,7 +652,9 @@ export class Band {
     // Melody: the theme of the current bar, read off the layers (see the header), transposed onto the current chord.
     if (k === 0) this.prepareBar(s >> 3, f);
     const th = this.answer && k >= 5 ? this.answer : this.themeFor(s >> 3);
-    if (th && f.d > 0.08 && th.hit[k] === true && this.q(2) < clamp(dens * (0.4 + 0.8 * lerp1(f.d, f.rms[k] ?? 0, f.brain)), 0, 1)) {
+    const vr = this.feel.variation * this.feel.variation; // variation 0.5 adds little, 1 reinvents the line
+    const extra = this.q(4) < 0.3 * vr; // a slot that is not in the theme's rhythm joins in
+    if (th && f.d > 0.08 && (th.hit[k] === true || extra) && this.q(2) < clamp(dens * (0.4 + 0.8 * lerp1(f.d, f.rms[k] ?? 0, f.brain)), 0, 1)) {
       const pool: number[] = [];
       for (let m = 58; m <= 88; m++) if (cur.scale.includes(m % 12)) pool.push(m);
       const centre = 64 + f.lx * 16 - (f.ly - 0.5) * 6;
@@ -570,7 +667,7 @@ export class Band {
           idx = i;
         }
       });
-      idx = clamp(idx + (th.deg[k] ?? 0), 0, pool.length - 1);
+      idx = clamp(idx + (th.deg[k] ?? 0) + Math.round((this.q(5) - 0.5) * 5 * vr), 0, pool.length - 1);
       let note = pool[idx] ?? this.leadMidi;
       if (!off && q % 2 === 0) {
         const pcs = cur.bass.map((i) => (cur.root + i) % 12);
@@ -587,7 +684,11 @@ export class Band {
         note = best;
       }
       this.leadMidi = note;
-      this.leadNote(t, note, vel(52, 44), stepLen * 0.9);
+      if (this.q(6) < 0.4 * vr) {
+        const gi = clamp(idx + (this.q(7) < 0.5 ? -1 : 1), 0, pool.length - 1);
+        this.leadNote(Math.max(this.ctx.currentTime, t - stepLen * 0.18), pool[gi] ?? note, vel(38, 26), stepLen * 0.22); // grace note
+      }
+      this.leadNote(Math.max(this.ctx.currentTime, t + laidBack + (this.q(2) - 0.5) * loose * 0.6), note, vel(52, 44), stepLen * 0.9);
     }
   }
 
@@ -627,7 +728,12 @@ export class Band {
     const lv = this.lv.choir;
     vel = Math.round(vel * lv);
     if (!out || vel < 2) return;
-    const pi = Math.floor(this.sig(l) * CHOIR_PATCHES.length);
+    // The timbre follows the layer's signature slowly: the patch only changes well inside another band, and the modulator
+    // ratio glides towards it note by note instead of jumping.
+    const s = this.sig(l) * CHOIR_PATCHES.length;
+    let pi = Math.floor(s);
+    const prevPi = this.choirPatch[l] ?? pi;
+    if (this.choirSent[l] !== -1 && pi !== prevPi && (s - pi < 0.25 || s - pi > 0.75)) pi = prevPi;
     const cp = CHOIR_PATCHES[pi] ?? (CHOIR_PATCHES[0] as (typeof CHOIR_PATCHES)[number]);
     this.choirPatch[l] = pi;
     const cch = CHOIR_CH[l - 1] ?? 3;
@@ -635,6 +741,9 @@ export class Band {
       this.program(cch, cp.gm);
       this.choirSent[l] = pi;
     }
+    const ratio = (this.choirRatio[l] ?? cp.ratio) + (cp.ratio - (this.choirRatio[l] ?? cp.ratio)) * 0.2;
+    this.choirRatio[l] = ratio;
+    this.heard("choir", vel, 0.13);
     this.send(cch, midi, vel, t, dur);
     const ctx = this.ctx;
     const f = mtof(midi);
@@ -643,7 +752,7 @@ export class Band {
     const mg = ctx.createGain();
     const g = ctx.createGain();
     car.frequency.value = f;
-    mod.frequency.value = f * cp.ratio;
+    mod.frequency.value = f * ratio;
     mg.gain.setValueAtTime(f * (0.5 + 0.7 * clamp((this.sim?.crest[l] ?? 1) / 3, 0, 1)), t);
     mg.gain.exponentialRampToValueAtTime(f * 0.05, t + dur);
     const a = (0.13 * vel) / 127;
@@ -663,10 +772,14 @@ export class Band {
     if (vel < 2) return;
     this.send(CH.bass, midi, vel, t, dur);
     this.voices.bass.level = Math.max(this.voices.bass.level, vel / 127);
+    this.heard("bass", vel, 0.55);
+    for (const [kind, w] of this.mix("bass")) if (w > 0.02) this.bassVoice(kind, w, t, midi, vel, dur);
+  }
+
+  private bassVoice(kind: number, w: number, t: number, midi: number, vel: number, dur: number): void {
     const ctx = this.ctx;
     const f = mtof(midi);
-    const kind = this.patch.bass;
-    const a = ((kind === 3 ? 0.62 : kind === 2 ? 0.4 : 0.55) * vel) / 127;
+    const a = ((kind === 3 ? 0.62 : kind === 2 ? 0.4 : 0.55) * vel * w) / 127;
     const lp = ctx.createBiquadFilter();
     lp.type = "lowpass";
     const [open, close, q, types] =
@@ -700,13 +813,19 @@ export class Band {
   private comp(t: number, notes: readonly number[], vel: number, dur: number, count: number): void {
     vel = Math.round(vel * this.lv.comp);
     if (vel < 2) return;
+    notes.slice(0, count).forEach((midi, i) => {
+      this.send(CH.comp, midi, vel, t + i * 0.007, dur);
+    });
+    this.voices.comp.level = Math.max(this.voices.comp.level, vel / 127);
+    this.heard("comp", vel, 0.2);
+    for (const [kind, w] of this.mix("comp")) if (w > 0.02) this.compVoice(kind, w, t, notes, vel, dur, count);
+  }
+
+  private compVoice(kind: number, w: number, t: number, notes: readonly number[], vel: number, dur: number, count: number): void {
     const ctx = this.ctx;
     notes.slice(0, count).forEach((midi, i) => {
       const tt = t + i * 0.007;
-      this.send(CH.comp, midi, vel, tt, dur);
-      this.voices.comp.level = Math.max(this.voices.comp.level, vel / 127);
       const f = mtof(midi);
-      const kind = this.patch.comp;
       const x = vel / 127;
       const P = [
         { ratio: 1, i0: 1.2 + x * 1.6, i1: 0.25, itime: 0.5, atk: 0.004, sustain: false, end: 0.9, type: "sine", amp: 1 },
@@ -725,7 +844,7 @@ export class Band {
       mod.frequency.value = f * pp.ratio;
       mg.gain.setValueAtTime(pp.i0 * f, tt);
       mg.gain.exponentialRampToValueAtTime(Math.max(pp.i1, 0.001) * f, tt + pp.itime);
-      const a = (0.2 * x * pp.amp) / Math.sqrt(count);
+      const a = (0.2 * x * pp.amp * w) / Math.sqrt(count);
       g.gain.setValueAtTime(0.0001, tt);
       g.gain.linearRampToValueAtTime(a, tt + pp.atk);
       let stop: number;
@@ -758,9 +877,13 @@ export class Band {
     if (vel < 2) return;
     this.send(CH.lead, midi, vel, t, dur);
     this.voices.lead.level = Math.max(this.voices.lead.level, vel / 127);
+    this.heard("lead", vel, 0.2);
+    for (const [kind, w] of this.mix("lead")) if (w > 0.02) this.leadVoice(kind, w, t, midi, vel, dur);
+  }
+
+  private leadVoice(kind: number, w: number, t: number, midi: number, vel: number, dur: number): void {
     const ctx = this.ctx;
     const f = mtof(midi);
-    const kind = this.patch.lead;
     const o = ctx.createOscillator();
     o.type = kind === 1 ? "sine" : kind === 2 || kind === 3 ? "square" : "sawtooth";
     o.frequency.value = f;
@@ -783,7 +906,7 @@ export class Band {
       lp.frequency.exponentialRampToValueAtTime(kind === 0 ? 500 + vel * 4 : base * 0.8, t + dur);
     }
     const g = ctx.createGain();
-    const a = ((kind === 2 ? 0.34 : kind === 1 ? 0.2 : kind === 3 ? 0.14 : 0.16) * vel) / 127;
+    const a = ((kind === 2 ? 0.34 : kind === 1 ? 0.2 : kind === 3 ? 0.14 : 0.16) * vel * w) / 127;
     g.gain.setValueAtTime(0.0001, t);
     g.gain.linearRampToValueAtTime(a, t + (kind === 1 ? 0.04 : kind === 3 ? 0.03 : 0.015));
     g.gain.linearRampToValueAtTime(a * 0.8, t + dur * 0.7);
@@ -825,8 +948,12 @@ export class Band {
     if (vel < 2) return;
     this.send(CH.drums, 51, vel, t, 0.3);
     this.voices.ride.level = Math.max(this.voices.ride.level, vel / 127);
-    const peak = (0.3 * vel) / 127;
-    const kind = this.patch.ride;
+    this.heard("ride", vel, 0.3);
+    for (const [kind, w] of this.mix("ride")) if (w > 0.02) this.rideVoice(kind, w, t, vel, decayScale);
+  }
+
+  private rideVoice(kind: number, w: number, t: number, vel: number, decayScale: number): void {
+    const peak = (0.3 * vel * w) / 127;
     if (kind === 1) {
       // brushes: a soft, low swish with no ping
       this.noiseBurst(t, this.spat.ride.input, 1800, peak * 1.1, 0.16 * decayScale + 0.12, 3600);

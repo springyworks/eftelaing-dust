@@ -29,16 +29,42 @@ interface Setting {
 }
 
 // Optional "what is off?" hints. Each one nudges the sliders it names on the next proposal (or right away when idle).
+// "@loud" / "@quiet" are resolved to the level slider of the voice that currently dominates or is buried in the mix.
 const HINTS = [
-  { id: "flat", label: "Too flat", tip: "Dynamics: nothing moves enough", push: [["instrumentDrive", 1], ["spikeSens", 1], ["fmDepth", 1]] },
-  { id: "wild", label: "Too wild", tip: "Dynamics: too loud, too violent", push: [["instrumentDrive", -1], ["damping", 1], ["spikeSens", -1]] },
-  { id: "dull", label: "Dull voices", tip: "Voices: lifeless, thin", push: [["fmDepth", 1], ["width", 1], ["reverb", 1]] },
-  { id: "harsh", label: "Harsh voices", tip: "Voices: sharp, buzzy", push: [["fmDepth", -1], ["reverb", 1], ["damping", 1]] },
-  { id: "stiff", label: "Stiff rhythm", tip: "Rhythm: too square", push: [["swing", 1], ["spikeSens", 1]] },
-  { id: "messy", label: "Messy rhythm", tip: "Rhythm: no pulse", push: [["swing", -1], ["jazz", 1], ["spikeSens", -1]] },
+  { id: "flat", group: "Dynamics", label: "Too flat", tip: "Dynamics: nothing moves enough", push: [["instrumentDrive", 1], ["spikeSens", 1], ["fmDepth", 1]] },
+  { id: "wild", group: "Dynamics", label: "Too wild", tip: "Dynamics: too loud, too violent", push: [["instrumentDrive", -1], ["damping", 1], ["spikeSens", -1]] },
+  { id: "dull", group: "Voices", label: "Dull voices", tip: "Voices: lifeless, thin", push: [["fmDepth", 1], ["width", 1], ["reverb", 1]] },
+  { id: "harsh", group: "Voices", label: "Harsh voices", tip: "Voices: sharp, buzzy", push: [["fmDepth", -1], ["reverb", 1], ["damping", 1]] },
+  { id: "loud", group: "Voices", label: "A voice dominates", tip: "Mix: one voice drowns the others, the loudest one is pulled down", push: [["@loud", -1]] },
+  { id: "lost", group: "Voices", label: "A voice is lost", tip: "Mix: one voice is buried, the quietest one is pulled up", push: [["@quiet", 1]] },
+  { id: "thinbass", group: "Voices", label: "Bass too thin", tip: "Urban: no weight in the low end", push: [["bandBass", 1], ["bandDrums", 1]] },
+  { id: "boomy", group: "Voices", label: "Bass too boomy", tip: "Urban: muddy low end", push: [["bandBass", -1], ["reverb", -1]] },
+  { id: "washy", group: "Space", label: "Too washy", tip: "Too much reverb and sustain, no definition", push: [["reverb", -1], ["bandChoir", -1]] },
+  { id: "dry", group: "Space", label: "Too dry / cold", tip: "Too close and sterile, needs air and a room", push: [["reverb", 1], ["width", 1]] },
+  { id: "stiff", group: "Rhythm", label: "Stiff rhythm", tip: "Rhythm: too square", push: [["swing", 1], ["spikeSens", 1]] },
+  { id: "messy", group: "Rhythm", label: "Messy rhythm", tip: "Rhythm: no pulse", push: [["swing", -1], ["jazz", 1], ["spikeSens", -1]] },
+  { id: "mechanical", group: "Rhythm", label: "Too mechanical", tip: "Sounds like a machine: more human timing, dynamics and loose feel", push: [["bandHuman", 1], ["swing", 1], ["dust", 1]] },
+  { id: "sloppy", group: "Rhythm", label: "Too sloppy", tip: "Falls apart: tighter timing and even dynamics", push: [["bandHuman", -1], ["dust", -1]] },
+  { id: "groove", group: "Rhythm", label: "No groove", tip: "Urban: needs a pocket: ride, bass and swing locked in", push: [["bandDrums", 1], ["bandBass", 1], ["swing", 1]] },
+  { id: "busy", group: "Rhythm", label: "Too busy", tip: "Too many notes: give the music room to breathe", push: [["bandDensity", -1], ["bandChoir", -1]] },
+  { id: "sparse", group: "Rhythm", label: "Too sparse", tip: "Not enough going on", push: [["bandDensity", 1], ["bandKeys", 1]] },
+  { id: "slow", group: "Tempo", label: "Drags", tip: "Too slow", push: [["tempo", 1]] },
+  { id: "rushed", group: "Tempo", label: "Rushed", tip: "Too fast, no time to breathe", push: [["tempo", -1]] },
+  { id: "samey", group: "Form", label: "Too little variation", tip: "The same thing again and again: themes should develop, instruments and layers should change", push: [["bandVariation", 1], ["bandSwitch", 1], ["bandBrain", 1]] },
+  { id: "unstable", group: "Form", label: "No hook / too unstable", tip: "Keeps changing, nothing to hold on to: a theme should recur", push: [["bandVariation", -1], ["bandSwitch", -1]] },
+  { id: "jarring", group: "Form", label: "Jarring instrument change", tip: "An instrument swap does not feel musical: swap rarely", push: [["bandSwitch", -1]] },
+  { id: "melody", group: "Form", label: "Melody lost", tip: "Theory: the tune is not carried, the lead should lead", push: [["bandLead", 1], ["bandChoir", -1]] },
+  { id: "layers", group: "Form", label: "Want more layers", tip: "The whole brain should play more: more choir and brain share", push: [["bandBrain", 1], ["bandChoir", 1]] },
+  { id: "tense", group: "Harmony", label: "Too tense / dissonant", tip: "Theory: too many altered tensions (b9, #11), want resolved chords", push: [["bandColor", -1], ["pain", -1]] },
+  { id: "bland", group: "Harmony", label: "Harmony too plain", tip: "Theory: no tension and release, want colour and altered chords", push: [["bandColor", 1], ["jazz", 1]] },
 ] as const;
 type HintId = (typeof HINTS)[number]["id"];
-const OPPOSITE: Partial<Record<HintId, HintId>> = { flat: "wild", wild: "flat", dull: "harsh", harsh: "dull", stiff: "messy", messy: "stiff" };
+const OPPOSITE: Partial<Record<HintId, HintId>> = {
+  flat: "wild", wild: "flat", dull: "harsh", harsh: "dull", stiff: "messy", messy: "stiff",
+  loud: "lost", lost: "loud", thinbass: "boomy", boomy: "thinbass", washy: "dry", dry: "washy",
+  mechanical: "sloppy", sloppy: "mechanical", busy: "sparse", sparse: "busy", slow: "rushed", rushed: "slow",
+  samey: "unstable", unstable: "samey", tense: "bland", bland: "tense",
+};
 const HINT_STEP = 0.3;
 
 const smooth = (t: number): number => t * t * (3 - 2 * t);
@@ -68,6 +94,12 @@ export class Exerciser {
   private readonly hints = new Set<HintId>();
   private readonly chipEls: { id: HintId; el: HTMLButtonElement }[] = [];
   private bored = false;
+  // Tells which voice dominates the mix and which is buried (set by the app once the band exists).
+  private mixHook: (() => { loud: string; quiet: string } | null) | null = null;
+
+  setMixHook(fn: () => { loud: string; quiet: string } | null): void {
+    this.mixHook = fn;
+  }
 
   constructor(
     root: HTMLElement,
@@ -209,8 +241,19 @@ export class Exerciser {
     this.updateStatus(true);
   }
 
-  private chips(): HTMLButtonElement[] {
-    return HINTS.map((h) => {
+  private chips(): HTMLElement[] {
+    const rows = new Map<string, HTMLElement>();
+    for (const h of HINTS) {
+      let row = rows.get(h.group);
+      if (!row) {
+        row = document.createElement("div");
+        row.className = "ex-bar chip-group";
+        const name = document.createElement("span");
+        name.className = "chip-group-name";
+        name.textContent = h.group;
+        row.append(name);
+        rows.set(h.group, row);
+      }
       const el = this.button(h.label, "small chip", () => {
         if (this.hints.has(h.id)) this.hints.delete(h.id);
         else {
@@ -223,8 +266,9 @@ export class Exerciser {
       el.title = h.tip;
       el.setAttribute("aria-pressed", "false");
       this.chipEls.push({ id: h.id, el });
-      return el;
-    });
+      row.append(el);
+    }
+    return [...rows.values()];
   }
 
   private syncChips(): void {
@@ -242,7 +286,13 @@ export class Exerciser {
     if (this.bored) hints.add("flat");
     for (const h of HINTS) {
       if (!hints.has(h.id)) continue;
-      for (const [key, dir] of h.push) {
+      for (const [rawKey, dir] of h.push) {
+        let key: string = rawKey;
+        if (rawKey === "@loud" || rawKey === "@quiet") {
+          const d = this.mixHook?.();
+          if (!d) continue;
+          key = rawKey === "@loud" ? d.loud : d.quiet;
+        }
         const k = this.specs.findIndex((s) => s.key === key);
         if (k >= 0 && !this.locked[k]) out[k] = Math.min(1, Math.max(0, (out[k] ?? 0) + dir * HINT_STEP));
       }
