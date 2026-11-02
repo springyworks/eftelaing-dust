@@ -13,7 +13,7 @@
 // early-reflection plus diffuse reverb send. The position of a voice is projected from its tank: the layer index sets
 // the base azimuth and elevation, the energy centroid of the wave field moves the voice around.
 //
-// Jazz band: in "band" or "both" mode layer 1 plays a small band on a MIDI-style synthesiser (see band.ts); every
+// Jazz band: in "brain", "layer1" or "both" mode the brain (or layer 1 alone) plays a small band on a MIDI-style synthesiser (see band.ts); every
 // instrument is its own binaural source, placed in the same scene as the layers.
 //
 // Raw jazz: pitches can be snapped to the chord tones of a ii-V-I-VI loop and plucks to a swung eighth-note grid.
@@ -307,8 +307,8 @@ export class WaveMonitor {
     const now = ctx.currentTime;
     this.master.gain.setTargetAtTime(p.volume * 0.6, now, 0.05);
     const glide = p.jazz > 0 ? 0.03 : 0.06;
-    const rawMix = p.audioMode === "band" ? 0 : p.audioMode === "both" ? 0.6 : 1;
-    this.bandBus?.gain.setTargetAtTime(p.audioMode === "raw" ? 0 : p.audioMode === "both" ? 0.8 : 1, now, 0.05);
+    const rawMix = (p.audioMode === "raw" ? 1 : p.audioMode === "both" ? 0.6 : 0) * p.rawLevel;
+    this.bandBus?.gain.setTargetAtTime((p.audioMode === "raw" ? 0 : p.audioMode === "both" ? 0.8 : 1) * p.bandLevel, now, 0.05);
     this.voices.forEach((v, l) => {
       const hz = this.pitchHz[l] ?? 110;
       const lock = Math.max(sim.lock[l] ?? 0, l > 0 ? sim.lock[l - 1] ?? 0 : 0);
@@ -339,7 +339,7 @@ export class WaveMonitor {
     if (!ctx || !this.enabled || !this.master || !voice) return;
     const p = this.lastParams;
     if (p && p.audioMode !== "raw") this.band?.accent(layer, magnitude);
-    if (p?.audioMode === "band") return;
+    if (p?.audioMode === "brain" || p?.audioMode === "layer1") return;
     const swing = p?.swing ?? 0;
     const slot = this.band ? this.band.nextSlot(ctx.currentTime, swing) : swingSlot(ctx.currentTime, swing);
     const t = swing > 0 ? Math.min(slot, ctx.currentTime + 0.4) : ctx.currentTime;

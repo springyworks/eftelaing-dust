@@ -56,7 +56,7 @@ export type ContextMode = "rest" | "meditation" | "music" | "movie";
 export type Dimension = 1 | 2 | 3;
 export type Projection = "wave" | "sand" | "both" | "iso" | "profile";
 export type SpatialMode = "stereo" | "binaural";
-export type AudioMode = "band" | "raw" | "both";
+export type AudioMode = "raw" | "brain" | "layer1" | "both";
 export type MidiOut = "off" | "on";
 
 export interface Params {
@@ -92,9 +92,12 @@ export interface Params {
   width: number; // azimuth spread of the ten voices
   reverb: number; // early reflections + diffuse tail send
   jazz: number; // pitch snapping to the current chord of a ii-V-I-VI loop
-  audioMode: AudioMode; // band = the brain, starting at layer 1, plays a jazz band on the MIDI synth, raw = the FM audification of all layers, both
+  audioMode: AudioMode; // raw = FM audification of all layers (inspection), brain = the whole brain plays the MIDI band, layer1 = only layer 1 plays it, both = raw + brain
   tempo: number; // bpm of the band (layer 1 activity pushes it a little)
   bandBrain: number; // 0 = layer 1 alone plays the band, 1 = the whole ten-layer brain plays and conducts it
+  rawLevel: number; // level of the raw FM voices
+  bandLevel: number; // master level of the MIDI band
+  bandDensity: number; // how busy melody and comping are (0.5 = as designed)
   bandChoir: number; // level of the ten layer instruments (one MIDI voice per layer, each at its own place)
   bandBass: number; // instrument levels of the band, learnt by the Monte Carlo exerciser
   bandKeys: number;
@@ -138,10 +141,13 @@ export const DEFAULT_PARAMS: Params = {
   reverb: 0.25,
   jazz: 0.5,
   swing: 0.5,
-  audioMode: "band",
+  audioMode: "brain",
   tempo: 92,
   midiOut: "off",
   bandBrain: 0.6,
+  rawLevel: 1,
+  bandLevel: 1,
+  bandDensity: 0.5,
   bandChoir: 0.5,
   bandBass: 0.8,
   bandKeys: 0.7,
@@ -150,7 +156,7 @@ export const DEFAULT_PARAMS: Params = {
 };
 
 // Settings that describe how the human sees and hears the instrument; scenarios leave them alone.
-export const PRESENTATION_KEYS = ["volume", "listen", "fmDepth", "spikeSens", "projection", "spatial", "width", "reverb", "jazz", "swing", "audioMode", "tempo", "midiOut", "bandBrain", "bandChoir", "bandBass", "bandKeys", "bandLead", "bandDrums", "matrixView"] as const;
+export const PRESENTATION_KEYS = ["volume", "listen", "fmDepth", "spikeSens", "projection", "spatial", "width", "reverb", "jazz", "swing", "audioMode", "tempo", "midiOut", "bandBrain", "rawLevel", "bandLevel", "bandDensity", "bandChoir", "bandBass", "bandKeys", "bandLead", "bandDrums", "matrixView"] as const;
 
 export interface Scenario {
   readonly id: string;

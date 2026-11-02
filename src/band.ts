@@ -151,7 +151,7 @@ export class Band {
 
   update(sim: Simulation, p: Params, now: number, scene: readonly ScenePos[], pitchHz: ArrayLike<number>): void {
     const rms = Array.from({ length: NUM_LAYERS }, (_, l) => clamp((sim.rms[l] ?? 0) / 0.35, 0, 1));
-    const brain = p.bandBrain;
+    const brain = p.audioMode === "layer1" ? 0 : p.bandBrain;
     const mean = (xs: readonly number[]): number => xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length);
     const lerp = (a: number, b: number, k: number): number => a + (b - a) * k;
     const d = lerp(rms[0] ?? 0, mean(rms), 0.4 * brain);
@@ -264,6 +264,7 @@ export class Band {
     const nextChord = progression(f.tension)[(this.chordIndex + 1) % 4] ?? cur;
     const beatDur = 60 / this.bpm;
     const vel = (base: number, span: number): number => Math.round(clamp(base + span * f.d + (Math.random() - 0.5) * 10, 1, 127));
+    const dens = p.bandDensity * 2;
     const loose = (0.3 + p.dust * 3) * 0.012 * (1.7 - f.health);
 
     // Walking bass: one note per beat, always from the bottom layer's activity.
@@ -293,7 +294,7 @@ export class Band {
     }
 
     // Comping: the charleston "1" and "and of 2", extra hits by crest factor, and a stab for every accent.
-    const compWanted = f.d > 0.05 && ((!off && q === 0 && Math.random() < 0.5) || (off && q === 1) || (off && Math.random() < 0.1 + 0.35 * f.crest));
+    const compWanted = f.d > 0.05 && ((!off && q === 0 && Math.random() < 0.5) || (off && q === 1) || (off && Math.random() < (0.1 + 0.35 * f.crest) * dens));
     if (compWanted) this.comp(Math.max(this.ctx.currentTime, t + (Math.random() - 0.5) * loose), cur.voicing, vel(40, 34), beatDur * 0.4, f.crest < 0.3 ? 3 : 4);
     for (const a of accents) {
       const top = cur.voicing.slice(-3).map((n) => n + (a.layer >= 7 ? 12 : 0));
@@ -314,7 +315,7 @@ export class Band {
     }
 
     // Melody: eighth-note lines that move by step, snapping to chord tones on the strong beats.
-    if (f.d > 0.12 && Math.random() < 0.22 + 0.62 * f.d) {
+    if (f.d > 0.12 && Math.random() < (0.22 + 0.62 * f.d) * dens) {
       const pool: number[] = [];
       for (let m = 58; m <= 88; m++) if (cur.scale.includes(m % 12)) pool.push(m);
       let idx = 0;
