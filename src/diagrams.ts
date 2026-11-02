@@ -11,7 +11,7 @@ import {
   type CellStyle,
   type TooltipHandler,
 } from "@maxgraph/core";
-import { LAYERS, MASLOW, NUM_LAYERS, clamp } from "./model";
+import { LAYERS, MASLOW, NUM_LAYERS, NUM_LEVELS, clamp, type MatrixView } from "./model";
 import type { Simulation } from "./sim";
 
 const SLOPE = 0.33;
@@ -49,6 +49,12 @@ const GROUP_INFO = [
   { name: "Players", text: "Players: agency and feeling (L8-L9)", from: 7, to: 8, color: "#d9a03a" },
   { name: "Instrument", text: "Instrument: the classic OSI stack (L1-L7)", from: 0, to: 6, color: "#4f96b5" },
 ] as const;
+
+function mappedLayers(mapping: Float32Array, m: number): string {
+  const ls: number[] = [];
+  for (let l = 0; l < NUM_LAYERS; l++) if ((mapping[m * NUM_LAYERS + l] ?? 0) > 0) ls.push(l + 1);
+  return ls.length === 0 ? "none" : `L${ls.join(",")}`;
+}
 
 export class OsiDiagram {
   readonly graph: Graph;
@@ -214,7 +220,7 @@ export class MaslowDiagram {
       const level = MASLOW[m];
       if (!level) return "";
       const ls = level.layers.map((l) => `L${l + 1}`).join(", ");
-      return `${level.name} is fed by OSI+ layers ${ls}. Fulfilment = layer vitality x stability of the layers below. Upper levels dim when lower ones are unmet.`;
+      return `${level.name} is by default fed by OSI+ layers ${ls} (editable in the matrix). Fulfilment = layer vitality x stability of the layers below. Upper levels dim when lower ones are unmet.`;
     };
   }
 
@@ -226,7 +232,7 @@ export class MaslowDiagram {
         if (!cell) return;
         const f = sim.fulfilment[m] ?? 0;
         const avail = sim.availability[m] ?? 1;
-        const ls = level.layers.length > 1 ? `L${level.layers[0]! + 1}-${level.layers[level.layers.length - 1]! + 1}` : `L${level.layers[0]! + 1}`;
+        const ls = mappedLayers(sim.mapping, m);
         g.getDataModel().setValue(
           cell,
           `<b>${level.name}</b><br/><span style="font-size:10px;opacity:.85">${ls} · fulfilment ${(f * 100).toFixed(0)}%</span>`,
@@ -235,6 +241,148 @@ export class MaslowDiagram {
         g.setCellStyles("opacity", Math.round(35 + 65 * avail), [cell]);
         g.setCellStyles("textOpacity", Math.round(50 + 50 * avail), [cell]);
       });
+    });
+  }
+}
+
+export interface MatrixClick {
+  readonly kind: "cell" | "row" | "col";
+  readonly m: number;
+  readonly l: number;
+}
+
+const HEAD_W = 176;
+const HEAD_H = 54;
+const CELL_W = 66;
+const CELL_H = 46;
+const GAP = 4;
+
+// Maslow levels (rows) x OSI+ layers (columns): shows activity, need or mapping weights and lets you edit and strike the mapping.
+export class MatrixDiagram {
+  readonly graph: Graph;
+  private readonly cols: Cell[] = [];
+  private readonly rows: Cell[] = [];
+  private readonly cells: Cell[][] = [];
+  private readonly lookup = new Map<Cell, MatrixClick>();
+  private readonly cache = new Map<Cell, string>();
+
+  constructor(container: HTMLElement, onClick: (c: MatrixClick) => void) {
+    this.graph = makeGraph(container);
+    const g = this.graph;
+    const parent = g.getDefaultParent();
+    const base: CellStyle = { fontColor: "#f1f1f1", fontSize: 11, whiteSpace: "wrap", strokeWidth: 1.5 };
+
+    g.batchUpdate(() => {
+      g.insertVertex({
+        parent,
+        value: "Maslow (rows)<br/>x OSI+ (columns)",
+        position: [0, 0],
+        size: [HEAD_W, HEAD_H],
+        style: { ...base, fillColor: "none", strokeColor: "none", fontColor: "#93a0b3" } satisfies CellStyle,
+      });
+      LAYERS.forEach((info, l) => {
+        const cell = g.insertVertex({
+          parent,
+          value: `L${info.id}`,
+          position: [HEAD_W + GAP + l * (CELL_W + GAP), 0],
+          size: [CELL_W, HEAD_H],
+          style: { ...base, rounded: true, strokeColor: info.color, fillColor: "#101418" } satisfies CellStyle,
+        });
+        this.cols.push(cell);
+        this.lookup.set(cell, { kind: "col", m: -1, l });
+      });
+      for (let m = NUM_LEVELS - 1; m >= 0; m--) {
+        const level = MASLOW[m];
+        if (!level) continue;
+        const y = HEAD_H + GAP + (NUM_LEVELS - 1 - m) * (CELL_H + GAP);
+        const head = g.insertVertex({
+          parent,
+          value: level.name,
+          position: [0, y],
+          size: [HEAD_W, CELL_H],
+          style: { ...base, rounded: true, strokeColor: level.color, fillColor: "#101418" } satisfies CellStyle,
+        });
+        this.rows[m] = head;
+        this.lookup.set(head, { kind: "row", m, l: -1 });
+        const rowCells: Cell[] = [];
+        for (let l = 0; l < NUM_LAYERS; l++) {
+          const cell = g.insertVertex({
+            parent,
+            value: "",
+            position: [HEAD_W + GAP + l * (CELL_W + GAP), y],
+            size: [CELL_W, CELL_H],
+            style: { ...base, fillColor: "#10151c", strokeColor: "#1a2330" } satisfies CellStyle,
+          });
+          rowCells[l] = cell;
+          this.lookup.set(cell, { kind: "cell", m, l });
+        }
+        this.cells[m] = rowCells;
+      }
+    });
+
+    g.addListener(InternalEvent.CLICK, (_sender: unknown, evt: { getProperty(name: string): unknown }) => {
+      const cell = evt.getProperty("cell") as Cell | null | undefined;
+      const hit = cell ? this.lookup.get(cell) : undefined;
+      if (hit) onClick(hit);
+    });
+    const tips = g.getPlugin<TooltipHandler>("TooltipHandler");
+    if (tips) {
+      tips.getTooltipForCell = (cell: Cell): string => {
+        const hit = this.lookup.get(cell);
+        if (!hit) return "";
+        if (hit.kind === "col") return `Click: select L${hit.l + 1} ${LAYERS[hit.l]?.name ?? ""} and fire a pulse in it (OSI+ to Maslow).`;
+        if (hit.kind === "row") return `Click: strike every OSI+ layer mapped to ${MASLOW[hit.m]?.name ?? ""} (Maslow to OSI+).`;
+        return `${MASLOW[hit.m]?.name ?? ""} x L${hit.l + 1}: click to cycle the mapping weight 0, 0.5, 1.`;
+      };
+    }
+  }
+
+  private paint(cell: Cell, fill: string, text: string, stroke: string): void {
+    const key = `${fill}|${text}|${stroke}`;
+    if (this.cache.get(cell) === key) return;
+    this.cache.set(cell, key);
+    const g = this.graph;
+    g.getDataModel().setValue(cell, text);
+    g.setCellStyles("fillColor", fill, [cell]);
+    g.setCellStyles("strokeColor", stroke, [cell]);
+  }
+
+  update(sim: Simulation, view: MatrixView, selected: number): void {
+    const q = (t: number): number => Math.round(clamp(t, 0, 1) * 20) / 20;
+    const palette = view === "activity" ? "#ffb347" : view === "need" ? "#4fa3ff" : "#3fb38a";
+    this.graph.batchUpdate(() => {
+      LAYERS.forEach((info, l) => {
+        const cell = this.cols[l];
+        if (!cell) return;
+        const rms = sim.rms[l] ?? 0;
+        const stroke = l === selected ? "#ffffff" : info.color;
+        this.paint(cell, mix("#101418", info.color, q(rms / 0.35) * 0.8), `<b>L${info.id}</b><br/><span style="font-size:9px">${info.name}</span>`, stroke);
+      });
+      for (let m = 0; m < NUM_LEVELS; m++) {
+        const level = MASLOW[m];
+        const head = this.rows[m];
+        if (!level || !head) continue;
+        const f = sim.fulfilment[m] ?? 0;
+        this.paint(
+          head,
+          mix("#101418", level.color, q(f) * 0.8),
+          `<b>${level.name}</b><br/><span style="font-size:9px">${mappedLayers(sim.mapping, m)} · ${(f * 100).toFixed(0)}%</span>`,
+          level.color,
+        );
+        for (let l = 0; l < NUM_LAYERS; l++) {
+          const cell = this.cells[m]?.[l];
+          if (!cell) continue;
+          const w = sim.mapping[m * NUM_LAYERS + l] ?? 0;
+          const idx = m * NUM_LAYERS + l;
+          let value = 0;
+          let text = "·";
+          if (view === "activity") value = sim.activity[idx] ?? 0;
+          else if (view === "need") value = Math.min(1, (sim.need[idx] ?? 0) * 1.5);
+          else value = w;
+          if (w > 0) text = view === "weights" ? w.toFixed(1) : `${Math.round(value * 100)}`;
+          this.paint(cell, mix("#10151c", palette, q(value)), text, w > 0 ? "#4a5d78" : "#1a2330");
+        }
+      }
     });
   }
 }

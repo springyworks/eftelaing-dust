@@ -1,6 +1,6 @@
-import { Instrument } from "./audio";
-import { MaslowDiagram, OsiDiagram } from "./diagrams";
-import { DEFAULT_PARAMS, LAYERS, NUM_LAYERS, SCENARIOS, type Dimension, type Params, type Scenario } from "./model";
+import { WaveMonitor } from "./audio";
+import { MaslowDiagram, MatrixDiagram, OsiDiagram, type MatrixClick } from "./diagrams";
+import { DEFAULT_PARAMS, LAYERS, NUM_LAYERS, SCENARIOS, defaultMapping, type Dimension, type Params, type Scenario } from "./model";
 import { Scope, TankView } from "./render";
 import { Simulation, type Vec3 } from "./sim";
 import { buildControls, helpButton, hideHelp, showHelp } from "./ui";
@@ -13,11 +13,55 @@ function $(id: string): HTMLElement {
 
 const params: Params = { ...DEFAULT_PARAMS };
 const sim = new Simulation(params.dimension);
-const audio = new Instrument();
+const audio = new WaveMonitor();
 let selected = 8;
 
 const osi = new OsiDiagram($("osi"), (l) => select(l));
 const maslow = new MaslowDiagram($("maslow"));
+const matrix = new MatrixDiagram($("matrix"), onMatrixClick);
+
+function onMatrixClick(c: MatrixClick): void {
+  if (c.kind === "col") {
+    select(c.l);
+    fire(c.l);
+  } else if (c.kind === "row") {
+    sim.fireLevel(c.m);
+    for (let l = 0; l < NUM_LAYERS; l++) if ((sim.mapping[c.m * NUM_LAYERS + l] ?? 0) > 0) audio.ping(l);
+  } else {
+    const i = c.m * NUM_LAYERS + c.l;
+    const w = sim.mapping[i] ?? 0;
+    sim.mapping[i] = w === 0 ? 0.5 : w < 1 ? 1 : 0;
+  }
+  matrix.update(sim, params.matrixView, selected);
+}
+
+// Spike monitor LEDs
+const ledsRoot = $("leds");
+const leds: { dot: HTMLElement; hz: HTMLElement; cnt: HTMLElement }[] = [];
+for (let i = NUM_LAYERS - 1; i >= 0; i--) {
+  const info = LAYERS[i];
+  if (!info) continue;
+  const el = document.createElement("div");
+  el.className = "led";
+  el.style.borderColor = info.color;
+  const dot = document.createElement("i");
+  const name = document.createElement("b");
+  name.textContent = `L${info.id}`;
+  const hz = document.createElement("span");
+  const cnt = document.createElement("div");
+  el.append(name, dot, hz, cnt);
+  ledsRoot.append(el);
+  leds[i] = { dot, hz, cnt };
+}
+const spectrum = $("spectrum") as HTMLCanvasElement;
+const resetMap = document.createElement("button");
+resetMap.className = "btn";
+resetMap.textContent = "Reset mapping";
+resetMap.addEventListener("click", () => {
+  sim.mapping.set(defaultMapping());
+  matrix.update(sim, params.matrixView, selected);
+});
+$("matrix-tools").append(resetMap);
 
 // Tanks
 const thumbsRoot = $("thumbs");
@@ -158,6 +202,12 @@ $("osi-help").append(
 $("maslow-help").append(
   helpButton("Maslow pyramid", "Six levels, each fed by one or two OSI+ layers. Fulfilment is how close those layers are to a healthy amplitude, multiplied by the stability they receive from below. Higher levels fade when lower ones are unmet."),
 );
+$("matrix-help").append(
+  helpButton("Maslow x OSI+ matrix", "Rows are Maslow levels, columns are OSI+ layers. Cells show how much a layer contributes to a level (activity, OSI+ to Maslow) or how much a level still needs from a layer (unmet need, Maslow to OSI+); the third view shows the editable weights. Click a cell to cycle its weight 0, 0.5, 1; click a column header to strike that layer; click a row header to strike every layer mapped to that level. Reverse drive is set with the Maslow to OSI+ slider."),
+);
+$("monitor-help").append(
+  helpButton("Wave-tank monitor", "Every layer is an FM voice driven by measurements of its tank: pitch = measured frequency, loudness = amplitude, brightness = peakiness, harmonic ratio = phase lock with neighbours. A sudden velocity jump is a spike: the LED flashes and a bright pluck sounds. The number under each LED counts spikes. The graph is the live spectrum. The pitch scale is a fixed time-scaling, so it shows relative, not physical, frequencies."),
+);
 $("tank-help").append(helpButton("Ripple tank", "The wave medium of the selected layer (red-ish and blue-ish tones are positive and negative displacement). Click anywhere to drop a pulse. In 1D it is drawn as a string; in 3D the middle slice is shown."));
 $("thumbs-help").append(helpButton("All ten tanks", "Click a thumbnail to select that layer. Watch waves cross from tank to tank through the coupling sliders."));
 $("scope-help").append(helpButton("Amplitude scope", "RMS amplitude of every layer over the last few seconds, in layer colours. Instabilities and cascades show up here before they are visible in the pyramid."));
@@ -185,7 +235,8 @@ function tick(): void {
     sim.observe(params);
     scope.push(sim.rms);
     scope.draw();
-    audio.update(sim, params);
+    audio.update(sim, params, selected);
+    for (let l = 0; l < NUM_LAYERS; l++) if ((sim.spikes[l] ?? 0) > 0) leds[l]?.dot.classList.add("on");
   }
   const gain = 2.2;
   currentBig.draw(sim, gain);
@@ -193,6 +244,13 @@ function tick(): void {
   if (frame % 6 === 0) {
     osi.update(sim);
     maslow.update(sim);
+    matrix.update(sim, params.matrixView, selected);
+    leds.forEach((led, l) => {
+      led.dot.classList.remove("on");
+      led.hz.textContent = `${(audio.pitchHz[l] ?? 0).toFixed(0)}Hz`;
+      led.cnt.textContent = `${sim.spikeCount[l] ?? 0}`;
+    });
+    audio.spectrum(spectrum);
     $("ro-align").textContent = `${(sim.alignment * 100).toFixed(0)}%`;
     $("ro-amp").textContent = (sim.rms[selected] ?? 0).toFixed(3);
     $("ro-stab").textContent = `${((selected === 0 ? 1 : sim.stability[selected - 1] ?? 1) * 100).toFixed(0)}%`;

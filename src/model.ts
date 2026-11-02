@@ -41,6 +41,17 @@ export const MASLOW: readonly MaslowLevel[] = [
   { name: "Self-transcendence", layers: [9], color: "#a63fa6" },
 ];
 
+export const NUM_LEVELS = MASLOW.length;
+
+// Mapping weights between Maslow levels (rows) and OSI+ layers (columns), row-major [level * NUM_LAYERS + layer].
+export function defaultMapping(): Float32Array {
+  const w = new Float32Array(NUM_LEVELS * NUM_LAYERS);
+  MASLOW.forEach((level, m) => level.layers.forEach((l) => (w[m * NUM_LAYERS + l] = 1)));
+  return w;
+}
+
+export type MatrixView = "activity" | "need" | "weights";
+export type ListenMode = "all" | "solo";
 export type ContextMode = "rest" | "meditation" | "music" | "movie";
 export type Dimension = 1 | 2 | 3;
 
@@ -64,6 +75,11 @@ export interface Params {
   psychedelic: number; // 5-HT2A-like context alignment
   context: ContextMode;
   volume: number;
+  listen: ListenMode;
+  fmDepth: number; // FM modulation index scale of the monitor
+  spikeSens: number; // spike detector sensitivity
+  reverseGain: number; // Maslow unmet need driving the mapped OSI layers
+  matrixView: MatrixView;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -86,6 +102,11 @@ export const DEFAULT_PARAMS: Params = {
   psychedelic: 0,
   context: "rest",
   volume: 0.5,
+  listen: "all",
+  fmDepth: 0.6,
+  spikeSens: 0.5,
+  reverseGain: 0.3,
+  matrixView: "activity",
 };
 
 export interface Scenario {
@@ -107,14 +128,14 @@ export const SCENARIOS: readonly Scenario[] = [
     id: "cascade",
     title: "Bottom-up cascade",
     help: "A single impulse at the Physical layer travels upward through coupling only (no top-down). Watch the wave front climb L1 to L10.",
-    params: { ...DEFAULT_PARAMS, instrumentDrive: 0, playerActivity: 0, directorIntent: 0, dust: 0.02, couplingUp: 0.9, couplingDown: 0, stabilization: 0.05, damping: 0.003 },
+    params: { ...DEFAULT_PARAMS, instrumentDrive: 0, playerActivity: 0, directorIntent: 0, dust: 0.02, reverseGain: 0, couplingUp: 0.9, couplingDown: 0, stabilization: 0.05, damping: 0.003 },
     fireLayer: 0,
   },
   {
     id: "conductor",
     title: "Director conducts",
     help: "Only the Director (L10) plays; energy flows down through Consciousness and Player into the instrument. Director, players, instrument in one gesture.",
-    params: { ...DEFAULT_PARAMS, instrumentDrive: 0, playerActivity: 0, directorIntent: 1, couplingUp: 0, couplingDown: 0.9, stabilization: 0.05, damping: 0.003, dust: 0.03 },
+    params: { ...DEFAULT_PARAMS, instrumentDrive: 0, playerActivity: 0, directorIntent: 1, reverseGain: 0, couplingUp: 0, couplingDown: 0.9, stabilization: 0.05, damping: 0.003, dust: 0.03 },
     fireLayer: 9,
   },
   {
@@ -144,8 +165,8 @@ export const SCENARIOS: readonly Scenario[] = [
   {
     id: "dust",
     title: "Dust storm",
-    help: "Source #1: Dust, ubiquitous elementary consciousness. Strong background excitation in every layer, with no designed drive. See what structure emerges.",
-    params: { ...DEFAULT_PARAMS, instrumentDrive: 0, playerActivity: 0, directorIntent: 0, dust: 1, couplingUp: 0.7, couplingDown: 0.7, damping: 0.008 },
+    help: "Source #1: Dust, ubiquitous elementary consciousness, enters at the Director (L10) and trickles down through the top-down coupling. No designed drive. See what structure emerges lower in the stack.",
+    params: { ...DEFAULT_PARAMS, instrumentDrive: 0, playerActivity: 0, directorIntent: 0, dust: 1, couplingUp: 0.6, couplingDown: 0.9, damping: 0.006, reverseGain: 0 },
   },
 ];
 

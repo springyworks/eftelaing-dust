@@ -1,6 +1,6 @@
 // Coupled wave-field simulation: one n-dimensional "ripple tank" per OSI+ layer.
 
-import { MASLOW, NUM_LAYERS, clamp, type Dimension, type Params } from "./model";
+import { NUM_LAYERS, NUM_LEVELS, clamp, defaultMapping, type Dimension, type Params } from "./model";
 
 const GRID: Record<Dimension, readonly [number, number, number]> = {
   1: [192, 1, 1],
@@ -33,9 +33,17 @@ export class Simulation {
   readonly stability = new Float32Array(NUM_LAYERS).fill(1);
   readonly vitality = new Float32Array(NUM_LAYERS);
   readonly lock = new Float32Array(NUM_LAYERS); // phase lock between layer i and i+1
-  readonly fulfilment = new Float32Array(MASLOW.length);
-  readonly availability = new Float32Array(MASLOW.length);
+  readonly fulfilment = new Float32Array(NUM_LEVELS);
+  readonly availability = new Float32Array(NUM_LEVELS);
+  readonly freq = new Float32Array(NUM_LAYERS); // rms angular frequency per step, smoothed
+  readonly crest = new Float32Array(NUM_LAYERS); // peak / rms of the field, smoothed
+  readonly spikes = new Float32Array(NUM_LAYERS); // spike magnitude detected at the last observe(), else 0
+  readonly spikeCount = new Uint32Array(NUM_LAYERS);
+  readonly need = new Float32Array(NUM_LEVELS * NUM_LAYERS);
+  readonly activity = new Float32Array(NUM_LEVELS * NUM_LAYERS);
+  mapping = defaultMapping();
   alignment = 0;
+  private readonly vel = new Float32Array(NUM_LAYERS);
 
   private painPos: Vec3 = [0.5, 0.5, 0.5];
   private painUntil = 0;
@@ -97,10 +105,18 @@ export class Simulation {
   }
 
   // Strikes a layer: a displacement bump plus an outgoing velocity kick.
-  fire(layer: number, pos?: Vec3): void {
+  fire(layer: number, pos?: Vec3, amp = 1): void {
     const p: Vec3 = pos ?? [0.2 + 0.6 * Math.random(), 0.2 + 0.6 * Math.random(), 0.2 + 0.6 * Math.random()];
     const u = this.u[layer];
-    if (u) this.bump(u, p, this.sigma() * 1.3, 1);
+    if (u) this.bump(u, p, this.sigma() * 1.3, amp);
+  }
+
+  // Reverse mapping: strike every OSI layer that a Maslow level maps to.
+  fireLevel(level: number): void {
+    for (let l = 0; l < NUM_LAYERS; l++) {
+      const w = this.mapping[level * NUM_LAYERS + l] ?? 0;
+      if (w > 0) this.fire(l, undefined, w);
+    }
   }
 
   private standing(field: Float32Array, amp: number): void {
@@ -171,19 +187,38 @@ export class Simulation {
       if (p.ecstasy > 0) this.standing(mind, g * p.ecstasy * 0.03 * Math.sin(w * t) * (0.6 + 0.4 * Math.sin(0.003 * t)));
     }
 
-    if (p.dust > 0) {
-      const sprinkles = Math.max(1, Math.round(p.dust * 6));
-      for (let l = 0; l < NUM_LAYERS; l++) {
-        const f = this.v[l];
-        if (!f) continue;
-        const sPrev = l === 0 ? 1 : this.stability[l - 1] ?? 1;
-        const gain = g * p.dust * 0.15 * (1 + 2 * p.stabilization * (1 - sPrev)) * (1 + psy);
-        for (let k = 0; k < sprinkles; k++) {
-          const i = (Math.random() * this.size) | 0;
-          f[i] = (f[i] ?? 0) + gain * gauss();
-        }
+    // Dust is injected only at the Director (L10); lower layers receive it through top-down coupling.
+    const top = this.v[NUM_LAYERS - 1];
+    if (top && p.dust > 0) {
+      const sprinkles = Math.max(1, Math.round(p.dust * 24));
+      const gain = g * p.dust * 0.12 * (1 + psy);
+      for (let k = 0; k < sprinkles; k++) {
+        const i = (Math.random() * this.size) | 0;
+        top[i] = (top[i] ?? 0) + gain * gauss();
       }
     }
+
+    // Maslow -> OSI: unmet needs push the under-active layers they map to.
+    if (p.reverseGain > 0) {
+      for (let l = 0; l < NUM_LAYERS; l++) {
+        const f = this.v[l];
+        const need = this.layerNeed(l);
+        if (!f || need < 0.02 || (this.rms[l] ?? 0) > TARGET_RMS * 1.3) continue;
+        const ph = l * 0.9 + 0.5;
+        this.kick(f, [0.5 + 0.25 * Math.cos(ph), 0.5 + 0.25 * Math.sin(ph), 0.5], s, p.reverseGain * 0.05 * need * Math.sin(this.omega(l) * t));
+      }
+    }
+  }
+
+  private layerNeed(l: number): number {
+    let sum = 0;
+    let wsum = 0;
+    for (let m = 0; m < NUM_LEVELS; m++) {
+      const w = this.mapping[m * NUM_LAYERS + l] ?? 0;
+      sum += w * (this.availability[m] ?? 1) * (1 - (this.fulfilment[m] ?? 0));
+      wsum += w;
+    }
+    return wsum > 0 ? sum / wsum : 0;
   }
 
   step(p: Params): void {
@@ -343,15 +378,36 @@ export class Simulation {
     for (let l = 0; l < NUM_LAYERS; l++) {
       const u = this.u[l];
       if (!u) continue;
+      const v = this.v[l];
       let s2 = 0;
+      let sv2 = 0;
+      let peak = 0;
       let dot = 0;
       for (let i = 0; i < n; i++) {
         const x = u[i] ?? 0;
+        const y = v?.[i] ?? 0;
         s2 += x * x;
+        sv2 += y * y;
+        const ax = x < 0 ? -x : x;
+        if (ax > peak) peak = ax;
         dot += x * (this.ctx[i] ?? 0);
       }
       const rms = Math.sqrt(s2 / n);
       this.rms[l] = (this.rms[l] ?? 0) * 0.8 + rms * 0.2;
+
+      // Monitor features: spectral centre (rms omega = |v|/|u|), crest factor and velocity-jump spikes.
+      const vrms = Math.sqrt(sv2 / n);
+      if (rms > 1e-4) {
+        const w = clamp(vrms / rms, 0.01, 1);
+        this.freq[l] = (this.freq[l] ?? 0) * 0.85 + w * 0.15;
+        this.crest[l] = (this.crest[l] ?? 0) * 0.85 + clamp(peak / rms, 1, 12) * 0.15;
+      }
+      const ref = this.vel[l] ?? 0;
+      const threshold = 1.3 + 2 * (1 - p.spikeSens);
+      const isSpike = vrms > 0.004 && ref > 1e-5 && vrms > ref * threshold;
+      this.spikes[l] = isSpike ? clamp(vrms / (ref * threshold), 1, 4) : 0;
+      if (isSpike) this.spikeCount[l] = (this.spikeCount[l] ?? 0) + 1;
+      this.vel[l] = ref === 0 ? vrms : ref * 0.9 + vrms * 0.1;
       align += Math.abs(dot) / (Math.sqrt(s2) * ctxNorm + 1e-9);
 
       const next = this.u[l + 1];
@@ -377,16 +433,29 @@ export class Simulation {
       this.vitality[l] = Math.exp(-(lr * lr) / 2);
     }
 
+    // OSI -> Maslow: weighted vitality of the mapped layers, each scaled by the stability it receives from below.
     let avail = 1;
-    MASLOW.forEach((level, m) => {
-      const first = level.layers[0] ?? 0;
-      const sBelow = first === 0 ? 1 : this.stability[first - 1] ?? 1;
+    for (let m = 0; m < NUM_LEVELS; m++) {
       let sum = 0;
-      for (const l of level.layers) sum += this.vitality[l] ?? 0;
-      const f = clamp((sum / level.layers.length) * sBelow, 0, 1);
+      let wsum = 0;
+      for (let l = 0; l < NUM_LAYERS; l++) {
+        const w = this.mapping[m * NUM_LAYERS + l] ?? 0;
+        const sBelow = l === 0 ? 1 : this.stability[l - 1] ?? 1;
+        const a = w * (this.vitality[l] ?? 0) * sBelow;
+        this.activity[m * NUM_LAYERS + l] = a;
+        sum += a;
+        wsum += w;
+      }
+      const f = wsum > 0 ? clamp(sum / wsum, 0, 1) : 0;
       this.availability[m] = avail;
       this.fulfilment[m] = (this.fulfilment[m] ?? 0) * 0.85 + f * avail * 0.15;
       avail = clamp(avail * (0.35 + 0.65 * Math.min(1, f * 1.5)), 0, 1);
-    });
+    }
+    for (let m = 0; m < NUM_LEVELS; m++) {
+      for (let l = 0; l < NUM_LAYERS; l++) {
+        const w = this.mapping[m * NUM_LAYERS + l] ?? 0;
+        this.need[m * NUM_LAYERS + l] = w * (this.availability[m] ?? 1) * (1 - (this.fulfilment[m] ?? 0));
+      }
+    }
   }
 }

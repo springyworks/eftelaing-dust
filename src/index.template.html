@@ -52,9 +52,17 @@
   #scope { width:100%; height:140px; border-radius:6px; display:block; }
   .legend { display:flex; flex-wrap:wrap; gap:8px; font-size:11px; margin-top:4px; }
   .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:3px; }
+  #matrix-tools { margin-left:auto; }
+  .monitor { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(0,1fr); gap:12px; align-items:stretch; }
+  .leds { display:grid; grid-template-columns:repeat(10,1fr); gap:4px; }
+  .led { background:var(--panel2); border:1px solid var(--line); border-radius:6px; padding:4px 2px; text-align:center; font-size:10px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  .led i { display:block; width:14px; height:14px; margin:2px auto 4px; border-radius:50%; background:#2a3342; transition:background .25s, box-shadow .25s; }
+  .led i.on { background:#ff5a3c; box-shadow:0 0 10px #ff5a3c; transition:none; }
+  .led b { display:block; color:var(--fg); font-size:11px; }
+  #spectrum { width:100%; height:100%; min-height:110px; border-radius:6px; display:block; }
   footer { padding:6px 16px 24px; color:var(--dim); font-size:12px; }
   footer a { color:var(--acc); }
-  @media (max-width:1250px) { main { grid-template-columns:1fr; } aside { position:static; max-height:none; } .diagrams, .tanks { grid-template-columns:1fr; } }
+  @media (max-width:1250px) { .monitor { grid-template-columns:1fr; } main { grid-template-columns:1fr; } aside { position:static; max-height:none; } .diagrams, .tanks { grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
@@ -70,6 +78,7 @@
     <div id="controls"></div>
   </aside>
   <div class="stage">
+    <div class="card"><h2>Matrix: Maslow x OSI-layer plus <span id="matrix-help"></span><span id="matrix-tools"></span></h2><div class="graph" id="matrix" style="height:420px"></div></div>
     <div class="diagrams">
       <div class="card"><h2>OSI-layer plus (L1-L10) <span id="osi-help"></span></h2><div class="graph" id="osi"></div></div>
       <div class="card"><h2>Maslow pyramid <span id="maslow-help"></span></h2><div class="graph" id="maslow"></div></div>
@@ -92,13 +101,20 @@
         <div class="legend" id="legend"></div>
       </div>
     </div>
+    <div class="card">
+      <h2>Wave-tank monitor: FM audification <span id="monitor-help"></span></h2>
+      <div class="monitor">
+        <div class="leds" id="leds"></div>
+        <canvas id="spectrum" width="520" height="130"></canvas>
+      </div>
+    </div>
   </div>
 </main>
 <footer>
   Dev sources:
   <a href="https://en.wikipedia.org/wiki/Dust_(His_Dark_Materials)" target="_blank" rel="noreferrer">#1 Dust (His Dark Materials), Wikipedia</a> ·
   <a href="https://doi.org/10.1038/s41586-026-10910-z" target="_blank" rel="noreferrer">#2 Psychedelics align brain activity with context, Nature</a>.
-  This is an artistic simulation, not a neuroscience or network model. Shortcuts: Space = play/pause, F = fire, S = sound.
+  This is an artistic simulation, not a neuroscience or network model. The sound is an audification of the simulated waves (FM), not a recording. Shortcuts: Space = play/pause, F = fire, S = sound.
 </footer>
 <!--__SCRIPT__-->
 </body>

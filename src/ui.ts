@@ -1,6 +1,6 @@
 // Control panel construction with per-control help popups.
 
-import type { ContextMode, Dimension, Params } from "./model";
+import type { ContextMode, Dimension, ListenMode, MatrixView, Params } from "./model";
 
 type NumKey = Exclude<{ [K in keyof Params]: Params[K] extends number ? K : never }[keyof Params], "dimension">;
 
@@ -16,7 +16,7 @@ interface SliderSpec {
 
 interface SelectSpec {
   readonly kind: "select";
-  readonly key: "dimension" | "context";
+  readonly key: "dimension" | "context" | "listen" | "matrixView";
   readonly label: string;
   readonly options: readonly { value: string; text: string }[];
   readonly help: string;
@@ -95,12 +95,43 @@ const GROUPS: readonly Group[] = [
   {
     title: "Source #1: Dust",
     specs: [
-      { kind: "slider", key: "dust", label: "Dust (background consciousness)", min: 0, max: 1, step: 0.01, help: "Ubiquitous elementary consciousness: tiny random excitations in every cell of every layer. Dust is amplified where the stabilisation from below is weak." },
+      { kind: "slider", key: "dust", label: "Dust (from the Director, L10)", min: 0, max: 1, step: 0.01, help: "Ubiquitous elementary consciousness: tiny random excitations injected into layer 10 only. They reach the lower layers solely through top-down coupling, so raise the top-down slider to let Dust trickle down." },
     ],
   },
   {
-    title: "Sound",
-    specs: [{ kind: "slider", key: "volume", label: "Volume", min: 0, max: 1, step: 0.01, help: "Master volume of the instrument. Use the Sound button in the toolbar to switch audio on (browsers need a click first)." }],
+    title: "Matrix: Maslow and OSI+ mapping",
+    specs: [
+      {
+        kind: "select",
+        key: "matrixView",
+        label: "Matrix shows",
+        options: [
+          { value: "activity", text: "Activity (OSI+ to Maslow)" },
+          { value: "need", text: "Unmet need (Maslow to OSI+)" },
+          { value: "weights", text: "Mapping weights" },
+        ],
+        help: "Activity: how much each layer contributes to each level (vitality x stability). Unmet need: how much each level still wants from each layer. Weights: the editable mapping itself. Click a cell to cycle its weight.",
+      },
+      { kind: "slider", key: "reverseGain", label: "Maslow to OSI+ drive", min: 0, max: 1, step: 0.01, help: "Reverse mapping: unmet needs of a Maslow level excite the quiet layers mapped to it (motivation). 0 switches the feedback off, leaving only OSI+ to Maslow." },
+    ],
+  },
+  {
+    title: "Wave-tank monitor (FM audification)",
+    specs: [
+      {
+        kind: "select",
+        key: "listen",
+        label: "Listen to",
+        options: [
+          { value: "all", text: "All ten layers" },
+          { value: "solo", text: "Selected layer only" },
+        ],
+        help: "Each layer is an FM voice driven by measurements of its wave field: pitch = measured frequency, level = amplitude, brightness = peakiness, harmonicity = phase lock with neighbours. Solo isolates the selected tank.",
+      },
+      { kind: "slider", key: "fmDepth", label: "FM depth", min: 0, max: 1, step: 0.01, help: "Scales the FM modulation index. Higher values make turbulent, peaky fields sound metallic and bright; zero gives plain sine tones." },
+      { kind: "slider", key: "spikeSens", label: "Spike sensitivity", min: 0, max: 1, step: 0.01, help: "How big a sudden jump in a layer's wave velocity must be to count as a spike. Spikes flash the monitor LEDs and fire a bright FM pluck." },
+      { kind: "slider", key: "volume", label: "Volume", min: 0, max: 1, step: 0.01, help: "Master volume. Use the Sound button in the toolbar (or S) to switch audio on; browsers need a click first." },
+    ],
   },
 ];
 
@@ -201,8 +232,12 @@ export function buildControls(root: HTMLElement, params: Params, onDimension: (d
             const d = Number(select.value) as Dimension;
             params.dimension = d;
             onDimension(d);
-          } else {
+          } else if (spec.key === "context") {
             params.context = select.value as ContextMode;
+          } else if (spec.key === "listen") {
+            params.listen = select.value as ListenMode;
+          } else {
+            params.matrixView = select.value as MatrixView;
           }
         });
         syncs.push(sync);
