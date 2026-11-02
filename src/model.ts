@@ -54,6 +54,10 @@ export type MatrixView = "activity" | "need" | "weights";
 export type ListenMode = "all" | "solo";
 export type ContextMode = "rest" | "meditation" | "music" | "movie";
 export type Dimension = 1 | 2 | 3;
+export type Projection = "wave" | "sand" | "both" | "iso" | "profile";
+export type SpatialMode = "stereo" | "binaural";
+export type AudioMode = "band" | "raw" | "both";
+export type MidiOut = "off" | "on";
 
 export interface Params {
   running: boolean;
@@ -80,6 +84,24 @@ export interface Params {
   spikeSens: number; // spike detector sensitivity
   reverseGain: number; // Maslow unmet need driving the mapped OSI layers
   matrixView: MatrixView;
+  sandErosion: number; // waves push sand from busy water to still water (Chladni-like streaming)
+  sandLevel: number; // gravity slope relaxation: sand slides downhill
+  sandDepth: number; // how much the sand bed height changes the local wave speed
+  projection: Projection;
+  spatial: SpatialMode;
+  width: number; // azimuth spread of the ten voices
+  reverb: number; // early reflections + diffuse tail send
+  jazz: number; // pitch snapping to the current chord of a ii-V-I-VI loop
+  audioMode: AudioMode; // band = the brain, starting at layer 1, plays a jazz band on the MIDI synth, raw = the FM audification of all layers, both
+  tempo: number; // bpm of the band (layer 1 activity pushes it a little)
+  bandBrain: number; // 0 = layer 1 alone plays the band, 1 = the whole ten-layer brain plays and conducts it
+  bandChoir: number; // level of the ten layer instruments (one MIDI voice per layer, each at its own place)
+  bandBass: number; // instrument levels of the band, learnt by the Monte Carlo exerciser
+  bandKeys: number;
+  bandLead: number;
+  bandDrums: number;
+  midiOut: MidiOut; // also send the band as MIDI to the first Web MIDI output
+  swing: number; // 0 = plucks sound immediately, >0 = quantised to a swung eighth-note grid
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -107,7 +129,28 @@ export const DEFAULT_PARAMS: Params = {
   spikeSens: 0.5,
   reverseGain: 0.3,
   matrixView: "activity",
+  sandErosion: 0.5,
+  sandLevel: 0.3,
+  sandDepth: 0.4,
+  projection: "both",
+  spatial: "binaural",
+  width: 0.7,
+  reverb: 0.25,
+  jazz: 0.5,
+  swing: 0.5,
+  audioMode: "band",
+  tempo: 92,
+  midiOut: "off",
+  bandBrain: 0.6,
+  bandChoir: 0.5,
+  bandBass: 0.8,
+  bandKeys: 0.7,
+  bandLead: 0.7,
+  bandDrums: 0.7,
 };
+
+// Settings that describe how the human sees and hears the instrument; scenarios leave them alone.
+export const PRESENTATION_KEYS = ["volume", "listen", "fmDepth", "spikeSens", "projection", "spatial", "width", "reverb", "jazz", "swing", "audioMode", "tempo", "midiOut", "bandBrain", "bandChoir", "bandBass", "bandKeys", "bandLead", "bandDrums", "matrixView"] as const;
 
 export interface Scenario {
   readonly id: string;
@@ -167,6 +210,12 @@ export const SCENARIOS: readonly Scenario[] = [
     title: "Dust storm",
     help: "Source #1: Dust, ubiquitous elementary consciousness, enters at the Director (L10) and trickles down through the top-down coupling. No designed drive. See what structure emerges lower in the stack.",
     params: { ...DEFAULT_PARAMS, instrumentDrive: 0, playerActivity: 0, directorIntent: 0, dust: 1, couplingUp: 0.6, couplingDown: 0.9, damping: 0.006, reverseGain: 0 },
+  },
+  {
+    id: "beach",
+    title: "Sea builds a beach",
+    help: "Strong standing waves push the sand bed (erosion) while gravity levels it. Sand never disappears, it only moves: it piles up at the quiet nodes and forms bars and ripples, which in turn change the local wave speed. Switch the projection to Isometric or Profile to see the beach grow.",
+    params: { ...DEFAULT_PARAMS, ecstasy: 0.25, instrumentDrive: 0.6, couplingUp: 0.6, couplingDown: 0.4, damping: 0.01, sandErosion: 0.9, sandLevel: 0.25, sandDepth: 0.7, projection: "iso" },
   },
 ];
 

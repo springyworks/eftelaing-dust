@@ -10,6 +10,9 @@ const GRID: Record<Dimension, readonly [number, number, number]> = {
 
 const TARGET_RMS = 0.15;
 const MAX_COUPLING = 0.08;
+const BED0 = 0.5; // initial (flat) sand height; the bed is a conserved quantity
+const BED_MAX = 1.2; // soft capacity: sand cannot be pushed into cells that are already this full
+const SAND_EVERY = 3; // sim steps per sand step (sand is slow)
 
 export type Vec3 = [number, number, number];
 
@@ -27,6 +30,15 @@ export class Simulation {
   v: Float32Array[] = [];
   ctx = new Float32Array(0);
   t = 0;
+
+  // Sand bed per layer: height map over the (x, y) plane, shared by all z slices. Mass-conserving.
+  plane = this.nx * this.ny;
+  bed: Float32Array[] = [];
+  private energy: Float32Array[] = [];
+  private cscale: Float32Array[] = [];
+  private delta = new Float32Array(0);
+  private sandPhase = 0;
+  readonly cen = new Float32Array(NUM_LAYERS * 3).fill(0.5); // energy centroid (x, y, z) in 0..1 per layer
 
   // Per-frame observables
   readonly rms = new Float32Array(NUM_LAYERS);
@@ -59,14 +71,141 @@ export class Simulation {
     this.u = Array.from({ length: NUM_LAYERS }, () => new Float32Array(this.size));
     this.v = Array.from({ length: NUM_LAYERS }, () => new Float32Array(this.size));
     this.ctx = new Float32Array(this.size);
+    this.plane = this.nx * this.ny;
+    this.bed = Array.from({ length: NUM_LAYERS }, () => new Float32Array(this.plane).fill(BED0));
+    this.energy = Array.from({ length: NUM_LAYERS }, () => new Float32Array(this.plane));
+    this.cscale = Array.from({ length: NUM_LAYERS }, () => new Float32Array(this.plane).fill(1));
+    this.delta = new Float32Array(this.plane);
     this.rms.fill(0);
     this.stability.fill(1);
+  }
+
+  // Levels the sand of one layer (or all): same mass, flat surface.
+  flattenSand(layer?: number): void {
+    for (let l = 0; l < NUM_LAYERS; l++) {
+      if (layer !== undefined && l !== layer) continue;
+      const b = this.bed[l];
+      if (b) b.fill(this.sandMass(l) / this.plane);
+      this.cscale[l]?.fill(1);
+    }
+  }
+
+  // Redistributes the sand of every layer into random smooth dunes. The total mass per layer is unchanged.
+  seedSand(): void {
+    for (let l = 0; l < NUM_LAYERS; l++) {
+      const b = this.bed[l];
+      if (!b) continue;
+      const mean = this.sandMass(l) / this.plane;
+      const g = new Float32Array(this.plane);
+      const blobs = 10 + ((Math.random() * 8) | 0);
+      for (let k = 0; k < blobs; k++) {
+        const cx = Math.random() * (this.nx - 1);
+        const cy = this.ny > 1 ? Math.random() * (this.ny - 1) : 0;
+        const sg = (this.nx / 14) * (0.6 + Math.random());
+        const amp = (Math.random() < 0.5 ? -1 : 1) * 0.35 * mean * (0.5 + Math.random());
+        const inv = 1 / (2 * sg * sg);
+        for (let y = 0; y < this.ny; y++) {
+          for (let x = 0; x < this.nx; x++) {
+            g[x + y * this.nx] = (g[x + y * this.nx] ?? 0) + amp * Math.exp(-((x - cx) ** 2 + (y - cy) ** 2) * inv);
+          }
+        }
+      }
+      let gm = 0;
+      for (let i = 0; i < this.plane; i++) gm += g[i] ?? 0;
+      gm /= this.plane;
+      for (let i = 0; i < this.plane; i++) b[i] = Math.max(0.01, mean + (g[i] ?? 0) - gm);
+      // Clamping removed or added a little mass: put it back uniformly.
+      const err = (mean * this.plane - this.sandMass(l)) / this.plane;
+      for (let i = 0; i < this.plane; i++) b[i] = Math.max(0, (b[i] ?? 0) + err);
+    }
+  }
+
+  sandMass(layer: number): number {
+    const b = this.bed[layer];
+    let m = 0;
+    if (b) for (let i = 0; i < this.plane; i++) m += b[i] ?? 0;
+    return m;
+  }
+
+  // Standard deviation of the bed height: 0 = flat.
+  sandRelief(layer: number): number {
+    const b = this.bed[layer];
+    if (!b) return 0;
+    const mean = this.sandMass(layer) / this.plane;
+    let s = 0;
+    for (let i = 0; i < this.plane; i++) s += ((b[i] ?? 0) - mean) ** 2;
+    return Math.sqrt(s / this.plane);
+  }
+
+  // Waves transport sand: from agitated water towards still water (acoustic streaming, as in Chladni figures),
+  // while gravity relaxes slopes. All transport is face-to-face flux, so the total sand mass is exactly conserved.
+  // The bed height in turn sets the local wave speed (shallow = slow).
+  private sandStep(p: Params): void {
+    const { nx, ny, nz, plane } = this;
+    const kE = p.sandErosion * 0.15;
+    const kL = p.sandLevel * 0.12;
+    const delta = this.delta;
+    for (let l = 0; l < NUM_LAYERS; l++) {
+      const u = this.u[l];
+      const v = this.v[l];
+      const bed = this.bed[l];
+      const e = this.energy[l];
+      const cs = this.cscale[l];
+      if (!u || !v || !bed || !e || !cs) continue;
+      const w = 1 / this.omega(l);
+      const inv = 1 / nz;
+      for (let i = 0; i < plane; i++) {
+        let acc = 0;
+        for (let z = 0; z < nz; z++) {
+          const k = i + z * plane;
+          const uu = u[k] ?? 0;
+          const vv = (v[k] ?? 0) * w;
+          acc += uu * uu + vv * vv;
+        }
+        e[i] = (e[i] ?? 0) * 0.95 + acc * inv * 0.05;
+      }
+      if (kE > 0 || kL > 0) {
+        delta.fill(0);
+        const face = (i: number, j: number): void => {
+          const bi = bed[i] ?? 0;
+          const bj = bed[j] ?? 0;
+          let f = kL * (bi - bj);
+          if (kE > 0) {
+            const ei = e[i] ?? 0;
+            const ej = e[j] ?? 0;
+            const tot = ei + ej;
+            const rel = (ei - ej) / (tot + 1e-6);
+            const gate = 1 - Math.exp(-tot / 0.01);
+            const k = kE * gate * rel;
+            f += k > 0 ? k * bi * Math.max(0, 1 - bj / BED_MAX) : k * bj * Math.max(0, 1 - bi / BED_MAX);
+          }
+          delta[i] = (delta[i] ?? 0) - f;
+          delta[j] = (delta[j] ?? 0) + f;
+        };
+        for (let y = 0; y < ny; y++) {
+          for (let x = 0; x < nx - 1; x++) face(x + y * nx, x + 1 + y * nx);
+        }
+        for (let y = 0; y < ny - 1; y++) {
+          for (let x = 0; x < nx; x++) face(x + y * nx, x + (y + 1) * nx);
+        }
+        for (let i = 0; i < plane; i++) bed[i] = Math.max(0, (bed[i] ?? 0) + (delta[i] ?? 0));
+      }
+      if (p.sandDepth > 0) {
+        let mean = 0;
+        for (let i = 0; i < plane; i++) mean += bed[i] ?? 0;
+        mean /= plane;
+        for (let i = 0; i < plane; i++) cs[i] = clamp(1 - p.sandDepth * 1.5 * ((bed[i] ?? 0) - mean), 0.35, 1.6);
+      } else {
+        cs.fill(1);
+      }
+    }
   }
 
   reset(): void {
     for (let l = 0; l < NUM_LAYERS; l++) {
       this.u[l]?.fill(0);
       this.v[l]?.fill(0);
+      this.energy[l]?.fill(0);
     }
     this.t = 0;
   }
@@ -260,6 +399,7 @@ export class Simulation {
       const sPrev = l === 0 ? 1 : this.stability[l - 1] ?? 1;
       const cf = 0.3 + 0.3 * (l / (NUM_LAYERS - 1));
       const c2 = (cf * cf) / nAxes;
+      const cs = p.sandDepth > 0 ? this.cscale[l] : undefined;
       const gamma = p.damping + stab * 0.03 * sPrev;
       const ks = stab * 0.004 * sPrev;
 
@@ -272,7 +412,7 @@ export class Simulation {
             if (hasX) lap += (u[i - sx] ?? 0) + (u[i + sx] ?? 0) - 2 * c;
             if (hasY) lap += (u[i - sy] ?? 0) + (u[i + sy] ?? 0) - 2 * c;
             if (hasZ) lap += (u[i - sz] ?? 0) + (u[i + sz] ?? 0) - 2 * c;
-            let a = c2 * lap - ks * c - gamma * (v[i] ?? 0);
+            let a = (cs ? c2 * (cs[x + y * nx] ?? 1) : c2) * lap - ks * c - gamma * (v[i] ?? 0);
             if (below) a += kUp * ((below[i] ?? 0) - c);
             if (above) a += kDown * ((above[i] ?? 0) - c);
             if (kCtx > 0) a += kCtx * ((ctx[i] ?? 0) - c);
@@ -301,6 +441,10 @@ export class Simulation {
       this.pinBoundary(u, v);
     }
     this.t += 1;
+    if (++this.sandPhase >= SAND_EVERY) {
+      this.sandPhase = 0;
+      this.sandStep(p);
+    }
   }
 
   private pinBoundary(u: Float32Array, v: Float32Array): void {
@@ -366,6 +510,33 @@ export class Simulation {
     }
   }
 
+  // Energy-weighted centre of the field, used to place the layer's voice in the auditory scene.
+  private updateCentroid(l: number, u: Float32Array, s2: number): void {
+    const { nx, ny, nz } = this;
+    let cx = 0;
+    let cy = 0;
+    let cz = 0;
+    for (let z = 0; z < nz; z++) {
+      for (let y = 0; y < ny; y++) {
+        let row = 0;
+        for (let x = 0; x < nx; x++) {
+          const a = u[x + nx * (y + ny * z)] ?? 0;
+          const w = a * a;
+          row += w;
+          cx += w * x;
+        }
+        cy += row * y;
+        cz += row * z;
+      }
+    }
+    const set = (k: number, v: number): void => {
+      this.cen[l * 3 + k] = (this.cen[l * 3 + k] ?? 0.5) * 0.85 + v * 0.15;
+    };
+    set(0, nx > 1 ? cx / s2 / (nx - 1) : 0.5);
+    set(1, ny > 1 ? cy / s2 / (ny - 1) : 0.5);
+    set(2, nz > 1 ? cz / s2 / (nz - 1) : 0.5);
+  }
+
   // Recomputes the slow observables: rms, stability chain, vitality, Maslow fulfilment, context alignment.
   observe(p: Params): void {
     this.updateContext(p.context);
@@ -394,6 +565,7 @@ export class Simulation {
       }
       const rms = Math.sqrt(s2 / n);
       this.rms[l] = (this.rms[l] ?? 0) * 0.8 + rms * 0.2;
+      if (s2 > 1e-6) this.updateCentroid(l, u, s2);
 
       // Monitor features: spectral centre (rms omega = |v|/|u|), crest factor and velocity-jump spikes.
       const vrms = Math.sqrt(sv2 / n);

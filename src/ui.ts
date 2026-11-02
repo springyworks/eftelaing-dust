@@ -1,10 +1,10 @@
 // Control panel construction with per-control help popups.
 
-import type { ContextMode, Dimension, ListenMode, MatrixView, Params } from "./model";
+import type { AudioMode, ContextMode, MidiOut, Dimension, ListenMode, MatrixView, Params, Projection, SpatialMode } from "./model";
 
-type NumKey = Exclude<{ [K in keyof Params]: Params[K] extends number ? K : never }[keyof Params], "dimension">;
+export type NumKey = Exclude<{ [K in keyof Params]: Params[K] extends number ? K : never }[keyof Params], "dimension">;
 
-interface SliderSpec {
+export interface SliderSpec {
   readonly kind: "slider";
   readonly key: NumKey;
   readonly label: string;
@@ -16,7 +16,7 @@ interface SliderSpec {
 
 interface SelectSpec {
   readonly kind: "select";
-  readonly key: "dimension" | "context" | "listen" | "matrixView";
+  readonly key: "dimension" | "context" | "listen" | "matrixView" | "projection" | "spatial" | "audioMode" | "midiOut";
   readonly label: string;
   readonly options: readonly { value: string; text: string }[];
   readonly help: string;
@@ -26,6 +26,7 @@ type Spec = SliderSpec | SelectSpec;
 
 interface Group {
   readonly title: string;
+  readonly collapsed?: boolean;
   readonly specs: readonly Spec[];
 }
 
@@ -116,6 +117,80 @@ const GROUPS: readonly Group[] = [
     ],
   },
   {
+    title: "Sand bed: erosion and levelling",
+    specs: [
+      { kind: "slider", key: "sandErosion", label: "Erosion (waves move sand)", min: 0, max: 1, step: 0.01, help: "Agitated water pushes sand towards the quiet spots (nodes), the way sand gathers in Chladni figures and sea bars form on a beach. Sand is never destroyed: every grain that leaves a cell arrives in a neighbour, so the total sand mass of a tank stays constant." },
+      { kind: "slider", key: "sandLevel", label: "Levelling (gravity)", min: 0, max: 1, step: 0.01, help: "Sand slides downhill and smooths the bed. Against erosion it sets the size and steepness of the ripples and dunes that can form." },
+      { kind: "slider", key: "sandDepth", label: "Bed shapes the waves", min: 0, max: 1, step: 0.01, help: "Shallow water is slow. With this above 0 the height of the sand changes the local wave speed, so the tank learns its own history: patterns of sand steer later waves, which move the sand again." },
+      {
+        kind: "select",
+        key: "projection",
+        label: "Projection",
+        options: [
+          { value: "wave", text: "Waves only (plan)" },
+          { value: "sand", text: "Sand relief (plan)" },
+          { value: "both", text: "Sand + water (plan)" },
+          { value: "iso", text: "Isometric 3D" },
+          { value: "profile", text: "Beach profile (side)" },
+        ],
+        help: "How the selected tank is shown. Plan views look straight down (sand as shaded relief, water as colour). Isometric draws the tank as rows of a 3D surface, and the profile is a cross-section like a beach seen from the side. Thumbnails always use a plan view.",
+      },
+    ],
+  },
+  {
+    title: "Stereo, HRTF and jazz",
+    specs: [
+      {
+        kind: "select",
+        key: "spatial",
+        label: "Spatial audio",
+        options: [
+          { value: "binaural", text: "Binaural HRTF (headphones)" },
+          { value: "stereo", text: "Plain stereo pan" },
+        ],
+        help: "Binaural: a parametric head model per voice (interaural time and level difference, pinna notches, distance and room) makes the ten layers sound as if they sit around you in 3D. Wear headphones. Stereo: a simple left/right pan. See knowlege_source/Hearing.md.",
+      },
+      { kind: "slider", key: "width", label: "Stage width", min: 0, max: 1, step: 0.01, help: "How far apart the ten layers are placed around the listener. The energy centre of each tank also moves its voice, so waves that travel across a tank are heard travelling across the stage." },
+      { kind: "slider", key: "reverb", label: "Room reverb", min: 0, max: 1, step: 0.01, help: "Early reflections and a diffuse tail. Distant voices get relatively more room, which is how the ear judges distance. Also helps to externalise the sound in headphones." },
+      { kind: "slider", key: "jazz", label: "Jazz harmony (pitch snap)", min: 0, max: 1, step: 0.01, help: "Pulls the raw FM voices' measured pitch towards a chord tone of the Dm11, G13, Cmaj9#11, A7b9b13 loop (two bars each). 0 = raw tank frequencies, 1 = fully in the chord. The jazz band always plays the chords; high Maslow fulfilment resolves them (Cmaj9, A13)." },
+      { kind: "slider", key: "swing", label: "Swing (pluck timing)", min: 0, max: 1, step: 0.01, help: "0 = a raw FM spike sounds immediately. Above 0 the band and every pluck wait for the next slot of an eighth-note grid, with the off-beats pushed later towards triplet swing as the slider goes up." },
+    ],
+  },
+  {
+    title: "General audio settings (band, raw FM, MIDI)",
+    collapsed: true,
+    specs: [
+      {
+        kind: "select",
+        key: "audioMode",
+        label: "Audio mode",
+        options: [
+          { value: "band", text: "Jazz band from layer 1 (MIDI synth)" },
+          { value: "raw", text: "Raw FM audification (nervous, all layers)" },
+          { value: "both", text: "Both" },
+        ],
+        help: "Band: the bottom layer's wave tank conducts a small jazz band (walking bass, keys, melody, ride) played on the built-in MIDI-style synthesiser; every instrument sits in its own place in the binaural scene. Raw: the original FM audification where every layer is a voice and spikes pluck. Both plays them together.",
+      },
+      { kind: "slider", key: "bandBrain", label: "Brain plays the band (L1 only → all ten)", min: 0, max: 1, step: 0.01, help: "0: only layer 1 (Physical) plays: its tank drives bass, keys, melody and ride. 1: the whole brain plays and conducts. Upper layers steer the melody (L7, L8), the comping peakiness (L4), the tempo (L10 Director) and the harmony (every Maslow level), and each of them speaks as its own instrument (see the choir). A healthy, aligned brain plays tight and in tune; a stressed one gets loose and tense." },
+      { kind: "slider", key: "bandChoir", label: "Layer choir level (one voice per layer)", min: 0, max: 1, step: 0.01, help: "L2 to L10 each play chord tones on their own MIDI voice, picked from the pitch their wave tank measures, and speak up when they spike. Each voice has its own HRTF (Hearing.md): ITD, head shadow, pinna notch and room, at the position of its layer in the scene. Scaled by the brain share above." },
+      { kind: "slider", key: "bandBass", label: "Bass level", min: 0, max: 1, step: 0.01, help: "How present the walking bass is. The Monte Carlo exerciser moves this too, so the brain learns what band you like." },
+      { kind: "slider", key: "bandKeys", label: "Keys level", min: 0, max: 1, step: 0.01, help: "How present the comping piano is." },
+      { kind: "slider", key: "bandLead", label: "Lead level", min: 0, max: 1, step: 0.01, help: "How present the melody line is." },
+      { kind: "slider", key: "bandDrums", label: "Ride and hat level", min: 0, max: 1, step: 0.01, help: "How present the ride cymbal and foot hi-hat are." },
+      { kind: "slider", key: "tempo", label: "Band tempo (bpm)", min: 60, max: 160, step: 1, help: "Base tempo of the band. A busy bottom layer pushes it up to about 6% faster, a quiet one slows it by the same amount. Swing is set in the jazz group." },
+      {
+        kind: "select",
+        key: "midiOut",
+        label: "MIDI output",
+        options: [
+          { value: "off", text: "Off" },
+          { value: "on", text: "Send the band to the first MIDI output" },
+        ],
+        help: "Also sends the band as MIDI (bass channel 1, keys channel 2, lead channel 3, ride and pedal hi-hat on drum channel 10) through Web MIDI, so an external synthesiser or DAW can play it. The browser asks for permission; Sound must be on. Not available in every browser.",
+      },
+    ],
+  },
+  {
     title: "Wave-tank monitor (FM audification)",
     specs: [
       {
@@ -134,6 +209,8 @@ const GROUPS: readonly Group[] = [
     ],
   },
 ];
+
+export const SLIDERS: readonly SliderSpec[] = GROUPS.flatMap((g) => g.specs.filter((sp): sp is SliderSpec => sp.kind === "slider"));
 
 let popup: HTMLDivElement | null = null;
 
@@ -186,8 +263,8 @@ export interface Controls {
 export function buildControls(root: HTMLElement, params: Params, onDimension: (d: Dimension) => void): Controls {
   const syncs: (() => void)[] = [];
   for (const group of GROUPS) {
-    const section = document.createElement("section");
-    const h = document.createElement("h3");
+    const section = document.createElement(group.collapsed ? "details" : "section");
+    const h = document.createElement(group.collapsed ? "summary" : "h3");
     h.textContent = group.title;
     section.append(h);
     for (const spec of group.specs) {
@@ -236,6 +313,14 @@ export function buildControls(root: HTMLElement, params: Params, onDimension: (d
             params.context = select.value as ContextMode;
           } else if (spec.key === "listen") {
             params.listen = select.value as ListenMode;
+          } else if (spec.key === "projection") {
+            params.projection = select.value as Projection;
+          } else if (spec.key === "spatial") {
+            params.spatial = select.value as SpatialMode;
+          } else if (spec.key === "audioMode") {
+            params.audioMode = select.value as AudioMode;
+          } else if (spec.key === "midiOut") {
+            params.midiOut = select.value as MidiOut;
           } else {
             params.matrixView = select.value as MatrixView;
           }

@@ -1,6 +1,7 @@
-import { WaveMonitor } from "./audio";
+import { WaveMonitor, binauralCues } from "./audio";
 import { MaslowDiagram, MatrixDiagram, OsiDiagram, type MatrixClick } from "./diagrams";
-import { DEFAULT_PARAMS, LAYERS, NUM_LAYERS, SCENARIOS, defaultMapping, type Dimension, type Params, type Scenario } from "./model";
+import { DEFAULT_PARAMS, LAYERS, NUM_LAYERS, PRESENTATION_KEYS, SCENARIOS, defaultMapping, type Dimension, type Params, type Scenario } from "./model";
+import { Exerciser } from "./exerciser";
 import { Scope, TankView } from "./render";
 import { Simulation, type Vec3 } from "./sim";
 import { buildControls, helpButton, hideHelp, showHelp } from "./ui";
@@ -54,6 +55,7 @@ for (let i = NUM_LAYERS - 1; i >= 0; i--) {
   leds[i] = { dot, hz, cnt };
 }
 const spectrum = $("spectrum") as HTMLCanvasElement;
+const sceneCanvas = $("scene") as HTMLCanvasElement;
 const resetMap = document.createElement("button");
 resetMap.className = "btn";
 resetMap.textContent = "Reset mapping";
@@ -128,10 +130,20 @@ function onDimension(d: Dimension): void {
 }
 
 const controls = buildControls($("controls"), params, onDimension);
+const exerciser = new Exerciser($("exerciser"), params, () => controls.syncAll());
+$("exerciser-help").append(
+  helpButton("Monte Carlo exerciser", "Let the machine play the sliders for you. It glides to a new random-ish setting, you listen and watch, and a popup asks Boring, No, Maybe or Yes (keys B, N, M, Y); tap one of the chips Too flat, Too wild, Dull voices, Harsh voices, Stiff rhythm or Messy rhythm first to steer the next proposal. Sound switches on when you start, with optional stronger answers Hellish (L) and Heavenly (H) for the truly awful and the truly beautiful. A Gaussian-process model learns from every answer which regions of the slider space you like, and proposes more of those. Lock sliders you want to keep by clicking their row in the taste profile. Your ratings are kept in this browser."),
+);
+$("scene-help").append(
+  helpButton("Auditory scene", "Where the ten layers sit around your head (left: seen from above, nose up; right: from the side). A tank's layer number sets its base direction and height, and the energy centre of its waves moves the voice. Poorly phase-locked layers sound farther away. With binaural HRTF on and headphones, you hear this scene. The bars show the left and right output level."),
+);
 
 const scenarioRoot = $("scenarios");
 function applyScenario(s: Scenario): void {
-  Object.assign(params, DEFAULT_PARAMS, s.params);
+  // How you see and hear the instrument (volume, projection, spatial sound, jazz) is yours, not the scenario's.
+  const mine: Partial<Params> = {};
+  for (const k of PRESENTATION_KEYS) Object.assign(mine, { [k]: params[k] });
+  Object.assign(params, DEFAULT_PARAMS, mine, s.params);
   if (params.dimension !== sim.dim) sim.setDimension(params.dimension);
   else sim.reset();
   configureTanks();
@@ -178,9 +190,22 @@ const helpBtn = button("Help", "", () => showHelp(helpBtn, "How to use", GENERAL
 const GENERAL_HELP =
   "Ten wave tanks stack from L1 (Physical) to L10 (Director). Each tank is coupled to its neighbours: bottom-up the instrument sounds into the player, top-down the director conducts. " +
   "Lower layers stabilise the layer above; a loud, unstable layer weakens everything over it. Maslow's levels are fed by pairs of layers and fill when those layers are healthy and stabilised. " +
-  "Fire a pulse with FIRE or by clicking the big tank, try a scenario, and play with the sliders. Every control has a ? button.";
+  "Fire a pulse with FIRE or by clicking the big tank, try a scenario, and play with the sliders. Every control has a ? button. Sound: the bottom layer conducts a jazz band (each instrument has its own place in the binaural scene); the raw FM sound of all layers is under General audio settings.";
 
-toolbar.append(playBtn, stepBtn, resetBtn, fireBtn, soundBtn, helpBtn);
+const mcBtn = button("Monte Carlo: Start", "mc", () => exerciser.toggle());
+const askBtn = button("Ask me now", "", () => exerciser.askNow());
+exerciser.onState = (running) => {
+  mcBtn.textContent = running ? "Monte Carlo: Stop" : "Monte Carlo: Start";
+  mcBtn.classList.toggle("on", running);
+  if (running && !audio.enabled) void toggleSound();
+};
+toolbar.append(playBtn, stepBtn, resetBtn, fireBtn, mcBtn, askBtn, soundBtn, helpBtn);
+
+$("tank-tools").append(
+  button("Level the sand", "small", () => sim.flattenSand()),
+  button("Seed random dunes", "small", () => sim.seedSand()),
+  helpButton("Sand tools", "Level the sand: every tank's sand is spread flat again (same amount of sand). Seed random dunes: the same sand is redistributed into random hills and hollows, so you can watch erosion and levelling work on it. Sand is never created or destroyed."),
+);
 
 function syncToolbar(): void {
   playBtn.textContent = params.running ? "Pause" : "Play";
@@ -223,7 +248,12 @@ function stepFrame(n: number): void {
   stepsSinceStatus += n;
 }
 
+let lastFrame = performance.now();
+
 function tick(): void {
+  const nowMs = performance.now();
+  exerciser.update(Math.min(0.1, (nowMs - lastFrame) / 1000));
+  lastFrame = nowMs;
   if (params.running) {
     accumulator += params.speed;
     const n = Math.floor(accumulator);
@@ -239,8 +269,8 @@ function tick(): void {
     for (let l = 0; l < NUM_LAYERS; l++) if ((sim.spikes[l] ?? 0) > 0) leds[l]?.dot.classList.add("on");
   }
   const gain = 2.2;
-  currentBig.draw(sim, gain);
-  thumbs.forEach((t) => t.view.draw(sim, gain));
+  currentBig.draw(sim, gain, params.projection);
+  thumbs.forEach((t) => t.view.draw(sim, gain, params.projection));
   if (frame % 6 === 0) {
     osi.update(sim);
     maslow.update(sim);
@@ -251,6 +281,16 @@ function tick(): void {
       led.cnt.textContent = `${sim.spikeCount[l] ?? 0}`;
     });
     audio.spectrum(spectrum);
+    audio.drawScene(sceneCanvas, selected);
+    const sv = audio.scene[selected];
+    if (sv) {
+      const cues = binauralCues(sv.az, sv.el);
+      $("cues").innerHTML =
+        `Selected: <b>L${selected + 1}</b><br>azimuth <b>${sv.az.toFixed(0)}°</b> elevation <b>${sv.el.toFixed(0)}°</b><br>distance <b>${sv.r.toFixed(1)} m</b><br>` +
+        `ITD <b>${Math.abs(cues.itdUs).toFixed(0)} µs</b> ${cues.itdUs >= 0 ? "(right ear first)" : "(left ear first)"}<br>ILD <b>${cues.ildDb.toFixed(1)} dB</b><br>pinna notch <b>${(cues.notchHz / 1000).toFixed(1)} kHz</b><br>chord <b>${audio.chord}</b><br>band <b>${audio.band ? audio.band.bpm.toFixed(0) : "-"} bpm</b>${audio.band?.midiName ? `<br>MIDI <b>${audio.band.midiName}</b>` : ""}`;
+    }
+    $("ro-relief").textContent = sim.sandRelief(selected).toFixed(3);
+    $("ro-sand").textContent = sim.sandMass(selected).toFixed(1);
     $("ro-align").textContent = `${(sim.alignment * 100).toFixed(0)}%`;
     $("ro-amp").textContent = (sim.rms[selected] ?? 0).toFixed(3);
     $("ro-stab").textContent = `${((selected === 0 ? 1 : sim.stability[selected - 1] ?? 1) * 100).toFixed(0)}%`;

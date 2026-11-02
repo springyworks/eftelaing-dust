@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Eftelaing-dust</title>
-<meta name="keywords" content="dust-programming, crap-art, playtool, pseudo-science, self-insight, OSI, Maslow, wave tank, FM audification, maxGraph" />
+<meta name="keywords" content="dust-programming, crap-art, playtool, pseudo-science, self-insight, OSI, Maslow, wave tank, FM audification, maxGraph, jazz, HRTF, sand bed, Monte Carlo" />
 <style>
   :root { --bg:#0b0f15; --panel:#121923; --panel2:#171f2c; --line:#263244; --fg:#e6eaf0; --dim:#93a0b3; --acc:#ffb347; --acc2:#b04ad0; }
   * { box-sizing: border-box; }
@@ -19,10 +19,15 @@
   .btn.fire { background:linear-gradient(180deg,#ff8a2b,#c4400d); border-color:#ff9a4a; font-weight:700; letter-spacing:.05em; }
   .btn.fire:hover { filter:brightness(1.15); }
   .btn.on { border-color:var(--acc); color:var(--acc); }
+  .btn.mc { background:linear-gradient(180deg,#2d7a4a,#17452b); border-color:#4ac27a; font-weight:700; }
+  .btn.mc.on { background:linear-gradient(180deg,#a8402c,#5a1d12); border-color:#ff7a5c; color:#fff; }
+  @keyframes dlg-pulse { 0%,100% { box-shadow:0 10px 40px #000c, 0 0 0 0 #ffb34788; } 50% { box-shadow:0 10px 40px #000c, 0 0 0 10px #ffb34700; } }
   .status { font-size:12px; color:var(--dim); width:100%; }
   main { display:grid; grid-template-columns:340px minmax(0,1fr); gap:12px; padding:12px; }
   aside { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; max-height:calc(100vh - 110px); overflow:auto; position:sticky; top:96px; align-self:start; }
   aside h2 { font-size:13px; margin:4px 0 8px; text-transform:uppercase; letter-spacing:.08em; color:var(--acc); }
+  aside details { border-top:1px solid var(--line); margin-top:14px; padding-top:8px; }
+  aside summary { cursor:pointer; font-size:12px; color:var(--dim); text-transform:uppercase; letter-spacing:.06em; margin-bottom:6px; }
   aside h3 { font-size:12px; margin:14px 0 6px; color:var(--dim); text-transform:uppercase; letter-spacing:.06em; border-top:1px solid var(--line); padding-top:8px; }
   #scenarios { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
   #scenarios .scn { display:flex; gap:4px; }
@@ -61,9 +66,31 @@
   .led i.on { background:#ff5a3c; box-shadow:0 0 10px #ff5a3c; transition:none; }
   .led b { display:block; color:var(--fg); font-size:11px; }
   #spectrum { width:100%; height:100%; min-height:110px; border-radius:6px; display:block; }
+  .ex-bar { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+  .ex-label { color:var(--dim); font-size:12px; margin-left:8px; }
+  .btn.rate.rno { border-color:#a8402c; } .btn.rate.rmaybe { border-color:#a8862c; } .btn.rate.ryes { border-color:#3b9a5c; }
+  .btn.rate.rboring { border-color:#8a8f99; color:#b8bec9; }
+  .btn.chip.on { background:#27405e; border-color:#7fb0ff; color:#fff; }
+  .btn.rate.rhell { border-color:#7a1414; color:#ff8a7a; } .btn.rate.rheaven { border-color:#7fe8ff; color:#bff3ff; }
+  .btn.rate.rhell:hover { background:#3a0c0c; } .btn.rate.rheaven:hover { background:#123a46; }
+  .btn.rate.rno:hover { background:#4a1d16; } .btn.rate.rmaybe:hover { background:#4a3a16; } .btn.rate.ryes:hover { background:#16401f; }
+  .ex-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:2px 14px; margin-top:10px; }
+  .ex-status { font-size:12px; color:var(--dim); margin:6px 0; font-variant-numeric:tabular-nums; }
+  .ex-prof { max-height:360px; overflow:auto; border-radius:6px; background:#090d13; }
+  .ex-canvas { width:100%; display:block; cursor:pointer; }
+  .ex-legend { font-size:11px; color:var(--dim); padding:4px 6px; }
+  .ex-legend i { display:inline-block; width:9px; height:9px; margin:0 3px 0 8px; border-radius:2px; }
+  .taste-dialog { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); animation:dlg-pulse 1.4s infinite; z-index:120; width:min(440px,calc(100vw - 36px)); background:#1b2434; border:2px solid var(--acc); border-radius:10px; padding:12px 14px; box-shadow:0 10px 40px #000c; }
+  .taste-dialog strong { font-size:16px; }
+  .taste-dialog p { margin:6px 0 10px; color:var(--dim); font-size:12px; }
+  .scene-wrap { display:grid; grid-template-columns:minmax(0,1fr) 190px; gap:12px; align-items:start; }
+  #scene { width:100%; border-radius:6px; display:block; }
+  .cues { font-size:12px; color:var(--dim); line-height:1.7; }
+  .cues b { color:var(--acc); font-variant-numeric:tabular-nums; }
+  .tank-tools { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
   footer { padding:6px 16px 24px; color:var(--dim); font-size:12px; }
   footer a { color:var(--acc); }
-  @media (max-width:1250px) { .monitor { grid-template-columns:1fr; } main { grid-template-columns:1fr; } aside { position:static; max-height:none; } .diagrams, .tanks { grid-template-columns:1fr; } }
+  @media (max-width:1250px) { .scene-wrap { grid-template-columns:1fr; } .monitor { grid-template-columns:1fr; } main { grid-template-columns:1fr; } aside { position:static; max-height:none; } .diagrams, .tanks { grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
@@ -79,6 +106,7 @@
     <div id="controls"></div>
   </aside>
   <div class="stage">
+    <div class="card"><h2>Monte Carlo exerciser: it learns what you like <span id="exerciser-help"></span></h2><div id="exerciser"></div></div>
     <div class="card"><h2>Matrix: Maslow x OSI-layer plus <span id="matrix-help"></span><span id="matrix-tools"></span></h2><div class="graph" id="matrix" style="height:420px"></div></div>
     <div class="diagrams">
       <div class="card"><h2>OSI-layer plus (L1-L10) <span id="osi-help"></span></h2><div class="graph" id="osi"></div></div>
@@ -92,7 +120,10 @@
           <span>Context alignment <b id="ro-align">0%</b></span>
           <span>Selected amplitude <b id="ro-amp">0</b></span>
           <span>Stability below <b id="ro-stab">100%</b></span>
+          <span>Sand relief <b id="ro-relief">0.000</b></span>
+          <span>Sand mass <b id="ro-sand">0</b></span>
         </div>
+        <div class="tank-tools" id="tank-tools"></div>
       </div>
       <div class="card">
         <h2>All ten tanks <span id="thumbs-help"></span></h2>
@@ -109,13 +140,20 @@
         <canvas id="spectrum" width="520" height="130"></canvas>
       </div>
     </div>
+    <div class="card">
+      <h2>Auditory scene: stereo / HRTF projection <span id="scene-help"></span></h2>
+      <div class="scene-wrap">
+        <canvas id="scene" width="640" height="260"></canvas>
+        <div class="cues" id="cues"></div>
+      </div>
+    </div>
   </div>
 </main>
 <footer>
   Dev sources:
   <a href="https://en.wikipedia.org/wiki/Dust_(His_Dark_Materials)" target="_blank" rel="noreferrer">#1 Dust (His Dark Materials), Wikipedia</a> ·
   <a href="https://doi.org/10.1038/s41586-026-10910-z" target="_blank" rel="noreferrer">#2 Psychedelics align brain activity with context, Nature</a>.
-  Genre: <b>dust-programming</b> / crap-art: a serious playtool, pseudo-science, art for everyone, for self-insight. This is an artistic simulation, not a neuroscience or network model. The sound is an audification of the simulated waves (FM), not a recording. Shortcuts: Space = play/pause, F = fire, S = sound.
+  Genre: <b>dust-programming</b> / crap-art: a serious playtool, pseudo-science, art for everyone, for self-insight. This is an artistic simulation, not a neuroscience or network model. The sound is an audification of the simulated waves (FM), not a recording. Spatial sound follows the parametric binaural model of <a href="https://github.com/springyworks/eftelaing-dust/blob/main/knowlege_source/Hearing.md" target="_blank" rel="noreferrer">Hearing.md</a> (use headphones). The sand bed conserves its mass and only redistributes. Shortcuts: Space = play/pause, F = fire, S = sound, B / N / M / Y = answer the exerciser (optional: L = Hellish, H = Heavenly).
 </footer>
 <!--__SCRIPT__-->
 </body>
