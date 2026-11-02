@@ -27,6 +27,7 @@ import { NUM_LAYERS, NUM_LEVELS, clamp, type BandStyle, type Params } from "./mo
 import type { Simulation } from "./sim";
 import { BOSSA_CLAVE, BOSSA_KICK, CHICKEN, FUNK_BASS, GHOST_SLOTS, KICKS, Personality, STRUMS, STYLES, STYLE_IDS, SWING_COMP, progressionCount, progressionOf, type Chord, type StyleId } from "./style";
 import { GUITAR_VOICING, VOICING_NAMES, harmonicHeat, planChord, voiceLead } from "./harmony";
+import { makeWah } from "./fx";
 
 export interface Spat {
   readonly input: AudioNode;
@@ -68,14 +69,20 @@ const BASS_PATCHES: readonly Patch[] = [
   { name: "sub", gm: 39 },
 ];
 const KEYS_PATCHES: readonly Patch[] = [
-  { name: "e-piano", gm: 4 },
+  { name: "Rhodes", gm: 4 },
   { name: "vibes", gm: 11 },
   { name: "organ", gm: 16 },
   { name: "harp", gm: 46 },
   { name: "warm pad", gm: 89 },
+  { name: "piano", gm: 0 },
+  { name: "clavinet", gm: 7 },
   { name: "strum guitar", gm: 25 },
 ];
-const GUITAR_PATCH = 5;
+// Indices of the voices with their own special-cased synthesis (not the generic FM table below).
+const RHODES_PATCH = 0;
+const PIANO_PATCH = 5;
+const CLAV_PATCH = 6;
+const GUITAR_PATCH = 7;
 const LEAD_PATCHES: readonly Patch[] = [
   { name: "saw lead", gm: 81 },
   { name: "flute", gm: 73 },
@@ -1341,14 +1348,21 @@ export class Band {
     const cvel = (base: number, span: number): number => vel(base + (this.heat - 0.4) * 14, span);
     const guitar = this.patch.comp === GUITAR_PATCH && shape.length > 0;
     const bpat = STRUMS[(this.strumPat + (bar % 4 === 3 ? 3 : 0)) % STRUMS.length] ?? "";
+    // A real strummer never hits the strings at exactly the same speed twice: jitter the strum time per stroke.
+    const human = (base: number): number => base * (0.65 + 0.7 * this.q(3));
     if (guitar && f.d > 0.05) {
       for (const [i, tt] of subs) {
         const ch = bpat[i];
         const alive = this.q(3) < 0.55 + 0.45 * Math.min(1, dens);
-        if (ch === "D") this.comp(at(tt, 3, 0.4), shape, cvel(50, 30), beatDur * 0.5, shape.length, 0.011);
-        else if (ch === "x") this.comp(at(tt, 3, 0.4), shape, cvel(60, 30), beatDur * 0.22, shape.length, 0.007);
-        else if (ch === "u" && alive) this.comp(at(tt, 3, 0.4), shape.slice(-4).reverse(), cvel(32, 18), beatDur * 0.2, 4, 0.006);
-        else if (ch === "m" && alive && this.q(3) < 0.4 + 0.6 * groove) this.comp(at(tt, 3, 0.4), shape.slice(0, 3), cvel(22, 12), 0.04, 3, 0.004);
+        if (ch === "D") this.comp(at(tt, 3, 0.4), shape, cvel(50, 30), beatDur * 0.5, shape.length, human(0.011));
+        else if (ch === "F") {
+          // Flam: a soft grace down-strum just ahead of the main one, like a pick-hand double stroke.
+          this.comp(Math.max(this.ctx.currentTime, at(tt, 3, 0.4) - 0.017), shape.slice(0, 2), cvel(24, 10), 0.05, 2, 0.01);
+          this.comp(at(tt, 3, 0.4), shape, cvel(54, 30), beatDur * 0.5, shape.length, human(0.009));
+        } else if (ch === "x") this.comp(at(tt, 3, 0.4), shape, cvel(60, 30), beatDur * 0.22, shape.length, human(0.007));
+        else if (ch === "u" && alive) this.comp(at(tt, 3, 0.4), shape.slice(-4).reverse(), cvel(32, 18), beatDur * 0.2, 4, human(0.006));
+        else if (ch === "c") this.chuck(at(tt, 3, 0.3), cvel(44, 16));
+        else if (ch === "m" && alive && this.q(3) < 0.4 + 0.6 * groove) this.comp(at(tt, 3, 0.4), shape.slice(0, 3), cvel(22, 12), 0.04, 3, human(0.004));
       }
     } else if (st.comp === "charleston") {
       const anticipate = k === 7 && bar % 2 === 1 && f.d > 0.05 && this.q(7) < groove * fl * 0.6; // the "and of four" pushes into the next chord
@@ -1597,8 +1611,23 @@ export class Band {
       const tt = t + i * strum;
       const f = mtof(midi);
       const x = vel / 127;
+      if (kind === RHODES_PATCH) {
+        this.rhodesNote(tt, f, x, w, dur, count);
+        return;
+      }
+      if (kind === PIANO_PATCH) {
+        this.pianoNote(tt, f, x, w, dur, count);
+        return;
+      }
+      if (kind === CLAV_PATCH) {
+        this.clavinetNote(tt, f, x, w, dur, count);
+        return;
+      }
       if (kind === GUITAR_PATCH) {
-        this.pluck(tt, f, x, w, dur, count);
+        // Short, hard notes (accents, up-strokes, mutes) ring brighter than long, soft ones (a full rolled chord): a
+        // real strummer's pick attack is sharper the harder and quicker the stroke.
+        const bright = clamp(1.6 - dur * 2.2, 0, 1);
+        this.pluck(tt, f, x, w, dur, count, bright);
         return;
       }
       const P = [
@@ -1646,12 +1675,14 @@ export class Band {
     });
   }
 
-  /** A plucked steel string: a bright saw that darkens quickly (filter envelope), a soft octave string and a pick click. */
-  private pluck(t: number, f: number, x: number, w: number, dur: number, count: number): void {
+  /**
+   * A plucked steel string: a bright saw that darkens quickly, a soft octave string, a pick click, and a touch-wah (its
+   * cry opens further the harder it's hit) instead of a fixed filter sweep, so no two strokes sound quite the same.
+   */
+  private pluck(t: number, f: number, x: number, w: number, dur: number, count: number, bright = 0.5): void {
     const ctx = this.ctx;
     const body = ctx.createOscillator();
     const shimmer = ctx.createOscillator();
-    const lp = ctx.createBiquadFilter();
     const g = ctx.createGain();
     const sg = ctx.createGain();
     body.type = "sawtooth";
@@ -1659,23 +1690,158 @@ export class Band {
     shimmer.type = "triangle";
     shimmer.frequency.value = f * 2.003;
     sg.gain.value = 0.22;
-    lp.type = "lowpass";
-    lp.Q.value = 1.5;
-    lp.frequency.setValueAtTime(Math.min(9000, f * (5 + 9 * x)), t);
-    lp.frequency.exponentialRampToValueAtTime(Math.max(f * 1.6, 350), t + 0.3);
     const a = (0.2 * (0.4 + x) * w) / Math.sqrt(count);
     const ring = Math.min(2.4, 0.55 + dur * 1.4 + 90 / f);
     g.gain.setValueAtTime(0.0001, t);
     g.gain.linearRampToValueAtTime(a, t + 0.003);
     g.gain.exponentialRampToValueAtTime(0.0005, t + ring);
-    body.connect(lp);
-    shimmer.connect(sg).connect(lp);
-    lp.connect(g).connect(this.spat.comp.input);
+    const wah = makeWah(ctx, t + ring + 0.1, { base: 380 + 500 * bright, range: 1400 + 2600 * x, q: 4 + 3 * bright, speed: 9 + 10 * bright });
+    body.connect(g);
+    shimmer.connect(sg).connect(g);
+    g.connect(wah.input);
+    wah.output.connect(this.spat.comp.input);
     body.start(t);
     shimmer.start(t);
     body.stop(t + ring + 0.05);
     shimmer.stop(t + ring + 0.05);
     this.noiseBurst(t, this.spat.comp.input, 2600, a * 0.45, 0.012, 3400);
+  }
+
+  /** A percussive all-string mute slap (chuck): no pitch, just the thud of palm-muted strings and pick noise. */
+  private chuck(t: number, vel: number): void {
+    vel = Math.round(vel * this.lv.comp);
+    if (vel < 2) return;
+    this.heard("comp", vel, 0.15);
+    const dest = this.spat.comp.input;
+    this.noiseBurst(t, dest, 1400, (0.26 * vel) / 127, 0.035, 2600);
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    o.type = "triangle";
+    o.frequency.setValueAtTime(140, t);
+    o.frequency.exponentialRampToValueAtTime(70, t + 0.04);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime((0.18 * vel) / 127, t + 0.002);
+    g.gain.exponentialRampToValueAtTime(0.0005, t + 0.05);
+    o.connect(g).connect(dest);
+    o.start(t);
+    o.stop(t + 0.07);
+  }
+
+  /**
+   * A real Fender-Rhodes-style tine: a sine carrier FM'd by itself near unison for the bell, a fast inharmonic "bark"
+   * that only shows on a hard hit, the amp's built-in tremolo (a slow wobble in loudness), and a touch-wah.
+   */
+  private rhodesNote(t: number, f: number, x: number, w: number, dur: number, count: number): void {
+    const ctx = this.ctx;
+    const car = ctx.createOscillator();
+    const mod = ctx.createOscillator();
+    const bark = ctx.createOscillator();
+    const mg = ctx.createGain();
+    const bg = ctx.createGain();
+    const g = ctx.createGain();
+    const trem = ctx.createOscillator();
+    const tremGain = ctx.createGain();
+    const ampMod = ctx.createGain();
+    car.type = "sine";
+    car.frequency.value = f;
+    mod.type = "sine";
+    mod.frequency.value = f;
+    bark.type = "sine";
+    bark.frequency.value = f * 7.1;
+    mg.gain.setValueAtTime((0.3 + x * 1.3) * f, t);
+    mg.gain.exponentialRampToValueAtTime(0.05 * f, t + 0.25);
+    bg.gain.setValueAtTime(x * 0.12, t);
+    bg.gain.exponentialRampToValueAtTime(0.0005, t + 0.045);
+    trem.type = "sine";
+    trem.frequency.value = 5.2;
+    tremGain.gain.value = 0.16;
+    ampMod.gain.value = 1;
+    const a = (0.3 * (0.3 + 0.9 * x) * w) / Math.sqrt(count);
+    const hold = Math.max(dur, 0.25);
+    const end = t + hold + 0.55;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(a, t + 0.006);
+    g.gain.linearRampToValueAtTime(a * 0.8, t + hold);
+    g.gain.exponentialRampToValueAtTime(0.0008, end);
+    mod.connect(mg).connect(car.frequency);
+    bark.connect(bg).connect(g);
+    car.connect(g);
+    trem.connect(tremGain).connect(ampMod.gain);
+    g.connect(ampMod);
+    const wah = makeWah(ctx, end, { base: 900, range: 700, q: 2.2, speed: 6 });
+    ampMod.connect(wah.input);
+    wah.output.connect(this.spat.comp.input);
+    car.start(t);
+    mod.start(t);
+    bark.start(t);
+    trem.start(t);
+    car.stop(end);
+    mod.stop(end);
+    bark.stop(t + 0.1);
+    trem.stop(end);
+  }
+
+  /** A struck-string piano chord: a triangle fundamental plus a detuned sine octave for the hammer's inharmonicity, a thud, a touch-wah. */
+  private pianoNote(t: number, f: number, x: number, w: number, dur: number, count: number): void {
+    const ctx = this.ctx;
+    const o1 = ctx.createOscillator();
+    const o2 = ctx.createOscillator();
+    const o2g = ctx.createGain();
+    const hp = ctx.createBiquadFilter();
+    const g = ctx.createGain();
+    o1.type = "triangle";
+    o1.frequency.value = f;
+    o2.type = "sine";
+    o2.frequency.value = f * 2.003;
+    o2g.gain.value = 0.18;
+    hp.type = "highpass";
+    hp.frequency.value = 90;
+    const a = (0.26 * (0.35 + 0.85 * x) * w) / Math.sqrt(count);
+    const ring = Math.min(2.6, 0.4 + dur * 1.2 + 140 / f);
+    const end = t + ring + 0.1;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(a, t + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0006, end);
+    o1.connect(g);
+    o2.connect(o2g).connect(g);
+    const wah = makeWah(ctx, end, { base: 700, range: 900, q: 3.2, speed: 7 });
+    g.connect(hp).connect(wah.input);
+    wah.output.connect(this.spat.comp.input);
+    o1.start(t);
+    o2.start(t);
+    o1.stop(end);
+    o2.stop(end);
+    this.noiseBurst(t, this.spat.comp.input, 3200, a * 0.3, 0.01, 4200);
+  }
+
+  /** A clavinet: two slightly detuned square "pickups", a near-instant pick attack and a fast, strong auto-wah: the funk bite. */
+  private clavinetNote(t: number, f: number, x: number, w: number, dur: number, count: number): void {
+    const ctx = this.ctx;
+    const o1 = ctx.createOscillator();
+    const o2 = ctx.createOscillator();
+    const hp = ctx.createBiquadFilter();
+    const g = ctx.createGain();
+    o1.type = "square";
+    o1.frequency.value = f;
+    o2.type = "square";
+    o2.frequency.value = f * 1.004;
+    hp.type = "highpass";
+    hp.frequency.value = 180;
+    const a = (0.22 * (0.3 + x) * w) / Math.sqrt(count);
+    const ring = Math.min(0.9, 0.12 + dur * 0.6);
+    const end = t + ring + 0.08;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(a, t + 0.001);
+    g.gain.exponentialRampToValueAtTime(0.0006, end);
+    o1.connect(g);
+    o2.connect(g);
+    const wah = makeWah(ctx, end, { base: 500 + 500 * x, range: 2600, q: 7, speed: 16 });
+    g.connect(hp).connect(wah.input);
+    wah.output.connect(this.spat.comp.input);
+    o1.start(t);
+    o2.start(t);
+    o1.stop(end);
+    o2.stop(end);
   }
 
   private leadNote(t: number, midi: number, vel: number, dur: number): void {

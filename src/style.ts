@@ -150,13 +150,14 @@ export const SWING_COMP: readonly string[] = [
   "x...x...x...x...", "X..x...x..X.x...", "..x.x.x...x.x.x.", "x..x..x.x..x..x.",
 ];
 /**
- * Strummed guitar over one bar of sixteenths: D down-strum of the whole chord, u up-strum of the top strings,
- * x hard accent, m muted chop, . rest.
+ * Strummed guitar over one bar of sixteenths: D down-strum of the whole chord, u up-strum of the top strings, x hard
+ * accent, m muted chop, F flam (a soft grace down-strum a beat ahead of the main one), c chuck (a percussive all-string
+ * mute slap, no pitch), . rest.
  */
 export const STRUMS: readonly string[] = [
   "D..u.uD.D.uu.uD.", "D...D...D...D..u", "D.mu.umuD.mu.umu", "..x...x...x...x.",
   "x..m.mx..m.mx.m.", "D..D..D.D..D..D.", "D.u.m.uD..uD.m.u", "..D.u..D..D.u.D.",
-  "D.......D..u....", "mDmDmDmDmDmDmDmD",
+  "D.......D..u....", "mDmDmDmDmDmDmDmD", "F..c.uD.F..c.uD.", "D.cu.cD.D.cu.cD.",
 ];
 /** Kick patterns (k) and the places a ghost snare may sit. */
 export const KICKS: readonly string[] = ["k..k..k...k..k..", "k.....k.k..k....", "k..k.k....k..k.k"];
