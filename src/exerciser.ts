@@ -5,7 +5,7 @@ import { TasteModel, type Rating } from "./taste";
 import { SLIDERS, helpButton, type NumKey, type SliderSpec } from "./ui";
 
 const STORAGE_KEY = "eftelaing-dust.taste.v1";
-const NOT_EXERCISED: readonly NumKey[] = ["speed", "volume"]; // the human always owns these
+const NOT_EXERCISED: readonly NumKey[] = ["speed", "volume", "rawLevel", "bandLevel"]; // the human always owns these
 
 type Mode = "off" | "glide" | "listen" | "ask";
 
