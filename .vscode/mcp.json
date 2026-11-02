@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "eftelaing-feedback": {
+      "type": "stdio",
+      "command": "npm",
+      "args": ["run", "--silent", "mcp"]
+    }
+  }
+}

@@ -3,6 +3,16 @@
 import type { Params } from "./model";
 import { TasteModel, type Rating } from "./taste";
 import { SLIDERS, helpButton, type NumKey, type SliderSpec } from "./ui";
+import { feedbackStatus, onFeedbackChange, queueNote } from "./feedback";
+
+const RATING_NAME = new Map<number, string>([
+  [-0.5, "hellish"],
+  [0, "no"],
+  [0.25, "boring"],
+  [0.5, "maybe"],
+  [1, "yes"],
+  [1.5, "heavenly"],
+]);
 
 const STORAGE_KEY = "eftelaing-dust.taste.v1";
 const NOT_EXERCISED: readonly NumKey[] = ["speed", "volume", "alcCeiling", "rawLevel", "bandLevel"]; // the human always owns these
@@ -50,6 +60,7 @@ export class Exerciser {
   private changed = "";
   private dialog: HTMLDivElement | null = null;
   private dialogText: HTMLElement | null = null;
+  private dialogNote: HTMLInputElement | null = null;
   private readonly status: HTMLElement;
   private readonly startBtn: HTMLButtonElement;
   private readonly canvas: HTMLCanvasElement;
@@ -106,6 +117,26 @@ export class Exerciser {
     chipLabel.textContent = "What is off? (optional, then rate)";
     chipBar.append(chipLabel, ...this.chips());
 
+    // Free-form feedback next to the preset buttons: queued, relayed to the dev relay and readable by an AI over MCP.
+    const noteBar = document.createElement("div");
+    noteBar.className = "ex-bar";
+    const noteInput = document.createElement("input");
+    noteInput.type = "text";
+    noteInput.className = "ex-note";
+    noteInput.placeholder = "Free note: what is missing or wrong? (queued for the AI)";
+    noteInput.maxLength = 2000;
+    const noteState = document.createElement("span");
+    noteState.className = "ex-label";
+    const sendNote = (): void => {
+      if (queueNote(noteInput.value, this.noteExtra())) noteInput.value = "";
+    };
+    noteInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") sendNote();
+    });
+    onFeedbackChange(() => (noteState.textContent = feedbackStatus()));
+    noteState.textContent = feedbackStatus();
+    noteBar.append(noteInput, this.button("Send note", "small", sendNote), noteState, helpButton("Free note", "Besides the preset buttons you can write anything: what is boring, what feature is missing, what you expected to hear. Every note is stored with a snapshot of the current sliders, band, instruments and chord, and is relayed to the local dev relay (npm run relay). An AI assistant reads the queue through the relay's MCP server (npm run mcp) and analyses where the instrument really lacks built-in features. If the relay is not running the notes wait in this browser and are sent later."));
+
     const grid = document.createElement("div");
     grid.className = "ex-grid";
     const num = (label: string, key: keyof Setting, min: number, max: number, step: number, help: string): void => {
@@ -159,11 +190,13 @@ export class Exerciser {
     legend.className = "ex-legend";
     legend.innerHTML = '<i style="background:#4fd07a"></i>where Yes lives <i style="background:#ff5a3c"></i>where No lives <i style="background:#fff"></i>now · bar brightness = how much the ratings depend on the slider · click a row to lock it';
     prof.append(this.canvas, legend);
-    root.append(bar, chipBar, grid, this.status, prof);
+    root.append(bar, chipBar, noteBar, grid, this.status, prof);
 
     document.addEventListener("slider-input", (e) => this.userMoved(String((e as CustomEvent).detail)));
     document.addEventListener("keydown", (e) => {
       if (this.mode !== "ask" || e.ctrlKey || e.metaKey || e.altKey) return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "TEXTAREA" || (tag === "INPUT" && (e.target as HTMLInputElement).type === "text")) return;
       const k = e.key.toLowerCase();
       if (k === "n") this.answer(0);
       else if (k === "m") this.answer(0.5);
@@ -395,7 +428,13 @@ export class Exerciser {
     const offRow = document.createElement("div");
     offRow.className = "ex-bar";
     offRow.append(...this.chips());
-    d.append(h, p, row, more, offLabel, offRow);
+    const note = document.createElement("input");
+    note.type = "text";
+    note.className = "ex-note";
+    note.placeholder = "Or write it: what is boring or missing? (optional)";
+    note.maxLength = 2000;
+    this.dialogNote = note;
+    d.append(h, p, row, more, offLabel, offRow, note);
     this.syncChips();
     document.body.append(d);
     this.dialog = d;
@@ -413,10 +452,20 @@ export class Exerciser {
     this.dialog?.remove();
     this.dialog = null;
     this.dialogText = null;
+    this.dialogNote = null;
+  }
+
+  private noteExtra(rating?: Rating): { rating?: string; hints?: string[] } {
+    const extra: { rating?: string; hints?: string[] } = { hints: [...this.hints] };
+    const name = rating === undefined ? undefined : RATING_NAME.get(rating);
+    if (name) extra.rating = name;
+    return extra;
   }
 
   private answer(r: Rating): void {
     if (this.mode !== "ask") return;
+    const text = this.dialogNote?.value ?? "";
+    queueNote(text, this.noteExtra(r));
     this.closeDialog();
     this.rate(r);
     if (this.auto) this.propose();

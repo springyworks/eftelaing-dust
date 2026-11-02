@@ -394,12 +394,12 @@ export class WaveMonitor {
   }
 
   // One-shot bright FM burst for a detected spike or a fired pulse; swung to the grid and snapped to the chord.
-  pluck(layer: number, magnitude: number, depth: number): void {
+  pluck(layer: number, magnitude: number, depth: number, pitchMul = 1): void {
     const ctx = this.ctx;
     const voice = this.voices[layer];
     if (!ctx || !this.enabled || !this.master || !voice) return;
     const p = this.lastParams;
-    if (p && p.audioMode !== "raw") this.band?.accent(layer, magnitude);
+    if (p && p.audioMode !== "raw" && pitchMul === 1) this.band?.accent(layer, magnitude);
     if (p?.audioMode === "brain" || p?.audioMode === "layer1") return;
     const swing = p?.swing ?? 0;
     const slot = this.band ? this.band.nextSlot(ctx.currentTime, swing) : swingSlot(ctx.currentTime, swing);
@@ -408,7 +408,7 @@ export class WaveMonitor {
     const mod = ctx.createOscillator();
     const modGain = ctx.createGain();
     const env = ctx.createGain();
-    const hz = snapHz((this.pitchHz[layer] || 110) * 2, p?.jazz ?? 0, this.band?.chordIndex ?? chordAt(t).index);
+    const hz = snapHz((this.pitchHz[layer] || 110) * 2 * pitchMul, p?.jazz ?? 0, this.band?.chordIndex ?? chordAt(t).index);
     car.frequency.value = hz;
     mod.frequency.value = hz * 3.5;
     modGain.gain.setValueAtTime(hz * 3.5 * (1 + 4 * depth) * Math.min(1.5, magnitude / 2), t);
@@ -426,6 +426,14 @@ export class WaveMonitor {
 
   ping(layer: number): void {
     this.pluck(layer, 3, 0.8);
+  }
+
+  // A character typed into layer 1: the band plays it and the brain answers in MIDI; the raw FM voice of layer 1 plucks too.
+  typeChar(code: number): void {
+    const p = this.lastParams;
+    if (!this.enabled) return;
+    if (p && p.audioMode !== "raw") this.band?.type(code);
+    this.pluck(0, 2, 0.6, 2 ** ((code % 12) / 12));
   }
 
   spectrum(canvas: HTMLCanvasElement): void {

@@ -2,6 +2,7 @@ import { WaveMonitor, binauralCues } from "./audio";
 import { MaslowDiagram, MatrixDiagram, OsiDiagram, type MatrixClick } from "./diagrams";
 import { DEFAULT_PARAMS, LAYERS, NUM_LAYERS, PRESENTATION_KEYS, SCENARIOS, defaultMapping, type Dimension, type Params, type Scenario } from "./model";
 import { Exerciser } from "./exerciser";
+import { setSnapshot } from "./feedback";
 import { Scope, TankView } from "./render";
 import { Simulation, type Vec3 } from "./sim";
 import { buildControls, helpButton, hideHelp, showHelp } from "./ui";
@@ -168,6 +169,18 @@ function onDimension(d: Dimension): void {
 }
 
 const controls = buildControls($("controls"), params, onDimension);
+setSnapshot(() => ({
+  params: { ...params },
+  selectedLayer: selected + 1,
+  chord: audio.chord,
+  bpm: audio.band ? Math.round(audio.band.bpm) : null,
+  instruments: audio.band?.patchInfo ?? "",
+  theme: audio.band?.themeInfo ?? "",
+  alignment: Number(sim.alignment.toFixed(3)),
+  rms: Array.from(sim.rms, (v) => Number(v.toFixed(3))),
+  stability: Array.from(sim.stability, (v) => Number(v.toFixed(3))),
+  soundOn: audio.enabled,
+}));
 const exerciser = new Exerciser($("exerciser"), params, () => controls.syncAll());
 $("exerciser-help").append(
   helpButton("Monte Carlo exerciser", "Let the machine play the sliders for you. It glides to a new random-ish setting, you listen and watch, and a popup asks Boring, No, Maybe or Yes (keys B, N, M, Y); tap one of the chips Too flat, Too wild, Dull voices, Harsh voices, Stiff rhythm or Messy rhythm first to steer the next proposal. Sound switches on when you start, with optional stronger answers Hellish (L) and Heavenly (H) for the truly awful and the truly beautiful. A Gaussian-process model learns from every answer which regions of the slider space you like, and proposes more of those. Move any slider yourself while it runs and the exerciser obeys at once, then slowly forgets your move (Respect my moves). Lock sliders you want to keep by clicking their row in the taste profile. Your ratings are kept in this browser."),
@@ -244,6 +257,31 @@ $("tank-tools").append(
   button("Seed random dunes", "small", () => sim.seedSand()),
   helpButton("Sand tools", "Level the sand: every tank's sand is spread flat again (same amount of sand). Seed random dunes: the same sand is redistributed into random hills and hollows, so you can watch erosion and levelling work on it. Sand is never created or destroyed."),
 );
+
+// Typing into layer 1: each character is a pulse in the bottom tank (its place and strength come from the character), the band
+// plays it as a note and the brain answers a few slots later; the raw FM voice of layer 1 plucks as well.
+const typeIn = $("typein") as HTMLInputElement;
+function typeInto(code: number): void {
+  const x = ((code * 37) % 97) / 97;
+  const y = ((code * 53) % 89) / 89;
+  const amp = code >= 65 && code <= 90 ? 1.1 : code === 32 ? 0.4 : 0.8;
+  sim.fire(0, [0.1 + 0.8 * x, 0.1 + 0.8 * y, 0.5], amp);
+  audio.typeChar(code);
+}
+typeIn.addEventListener("focus", () => {
+  if (selected !== 0) select(0);
+  if (!audio.enabled) void toggleSound();
+});
+typeIn.addEventListener("input", (e) => {
+  const data = (e as InputEvent).data;
+  if (data) for (const ch of data) typeInto(ch.charCodeAt(0));
+});
+typeIn.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  typeInto(10);
+  typeIn.value = "";
+});
+$("type-help").append(helpButton("Type into layer 1", "Every character you type is a pulse in the Physical tank (layer 1), at a place and strength set by the character. The band plays it at once as a note of the current scale (the same letter is always the same degree) in the lead instrument; three slots later the brain answers: the loudest layer sings a note back, and the keys follow with a stab. Raw FM mode plucks layer 1's own voice instead. In every audio mode you can still hear the internal MIDI doings and the raw layer FM. Enter clears the field."));
 
 function syncToolbar(): void {
   playBtn.textContent = params.running ? "Pause" : "Play";
@@ -325,7 +363,7 @@ function tick(): void {
       const cues = binauralCues(sv.az, sv.el);
       $("cues").innerHTML =
         `Selected: <b>L${selected + 1}</b><br>azimuth <b>${sv.az.toFixed(0)}°</b> elevation <b>${sv.el.toFixed(0)}°</b><br>distance <b>${sv.r.toFixed(1)} m</b><br>` +
-        `ITD <b>${Math.abs(cues.itdUs).toFixed(0)} µs</b> ${cues.itdUs >= 0 ? "(right ear first)" : "(left ear first)"}<br>ILD <b>${cues.ildDb.toFixed(1)} dB</b><br>pinna notch <b>${(cues.notchHz / 1000).toFixed(1)} kHz</b><br>chord <b>${audio.chord}</b><br>theme <b>${audio.band?.themeInfo ?? "-"}</b><br>band <b>${audio.band ? audio.band.bpm.toFixed(0) : "-"} bpm</b>${audio.band?.midiName ? `<br>MIDI <b>${audio.band.midiName}</b>` : ""}`;
+        `ITD <b>${Math.abs(cues.itdUs).toFixed(0)} µs</b> ${cues.itdUs >= 0 ? "(right ear first)" : "(left ear first)"}<br>ILD <b>${cues.ildDb.toFixed(1)} dB</b><br>pinna notch <b>${(cues.notchHz / 1000).toFixed(1)} kHz</b><br>chord <b>${audio.chord}</b><br>theme <b>${audio.band?.themeInfo ?? "-"}</b><br>instruments <b>${audio.band?.patchInfo || "-"}</b>${audio.band?.echoInfo ? `<br>typing <b>${audio.band.echoInfo}</b>` : ""}<br>band <b>${audio.band ? audio.band.bpm.toFixed(0) : "-"} bpm</b>${audio.band?.midiName ? `<br>MIDI <b>${audio.band.midiName}</b>` : ""}`;
     }
     $("ro-relief").textContent = sim.sandRelief(selected).toFixed(3);
     $("ro-sand").textContent = sim.sandMass(selected).toFixed(1);

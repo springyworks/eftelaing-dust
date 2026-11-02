@@ -61,7 +61,7 @@ export function progression(tension: number): readonly Chord[] {
 }
 
 export interface BandVoice {
-  readonly name: string;
+  name: string;
   readonly color: string;
   az: number;
   el: number;
@@ -72,6 +72,45 @@ export interface BandVoice {
 const mtof = (m: number): number => 440 * Math.pow(2, (m - 69) / 12);
 const LOOKAHEAD = 0.15;
 const CH = { bass: 0, comp: 1, lead: 2, drums: 9 } as const;
+
+// Instrument patches. Which one sounds is read from the layers (see Band.sig), not chosen by hand; gm is the General MIDI
+// program sent with a program change when a patch is swapped, so an external synth changes instrument too.
+interface Patch {
+  name: string;
+  gm: number;
+}
+const BASS_PATCHES: readonly Patch[] = [
+  { name: "upright", gm: 32 },
+  { name: "fretless", gm: 35 },
+  { name: "synth bass", gm: 38 },
+  { name: "sub", gm: 39 },
+];
+const KEYS_PATCHES: readonly Patch[] = [
+  { name: "e-piano", gm: 4 },
+  { name: "vibes", gm: 11 },
+  { name: "organ", gm: 16 },
+  { name: "harp", gm: 46 },
+  { name: "warm pad", gm: 89 },
+];
+const LEAD_PATCHES: readonly Patch[] = [
+  { name: "saw lead", gm: 81 },
+  { name: "flute", gm: 73 },
+  { name: "muted trumpet", gm: 59 },
+  { name: "clarinet", gm: 71 },
+];
+const RIDE_PATCHES: readonly Patch[] = [
+  { name: "ride", gm: 51 },
+  { name: "brushes", gm: 40 },
+  { name: "hat", gm: 42 },
+];
+// Choir voices are FM bells whose modulator ratio comes from the layer's own signature.
+const CHOIR_PATCHES: readonly { name: string; ratio: number; gm: number }[] = [
+  { name: "bell", ratio: 2, gm: 14 },
+  { name: "glass", ratio: 3.5, gm: 98 },
+  { name: "marimba", ratio: 1, gm: 12 },
+  { name: "celesta", ratio: 4, gm: 8 },
+  { name: "tine", ratio: 1.5, gm: 10 },
+];
 
 interface Features {
   d: number; // activity 0..1 (layer 1, blended with the whole brain)
@@ -131,6 +170,17 @@ export class Band {
   themeInfo = "";
   private readonly choir: Spat[]; // one per layer; index 0 is unused
   private lv = { bass: 1, comp: 1, lead: 1, ride: 1, choir: 0 };
+  // Current instrument per voice and the layer each was read from.
+  private patch = { bass: 0, comp: 0, lead: 0, ride: 0 };
+  private patchLayer = { bass: 0, comp: 3, lead: 0, ride: 5 };
+  private choirPatch: number[] = Array.from({ length: NUM_LAYERS }, () => 0);
+  private choirSent: number[] = Array.from({ length: NUM_LAYERS }, () => -1);
+  private brainNow = 1;
+  patchInfo = "";
+  // Characters typed into layer 1, and the brain's answers queued for later grid slots.
+  private typed: { code: number }[] = [];
+  private echoes: { step: number; kind: "layer" | "stab"; code: number }[] = [];
+  echoInfo = "";
   private pitchHz: ArrayLike<number> = [];
   private midi: MidiOut | null = null;
   private midiAsked = false;
@@ -309,8 +359,58 @@ export class Band {
     return b === 4 || b === 5 ? this.themes.B : this.themes.A;
   }
 
+  /** A character typed into layer 1: the band plays it on the next grid slot and the brain answers a few slots later. */
+  type(code: number): void {
+    if (this.typed.length < 16) this.typed.push({ code });
+  }
+
+  /**
+   * Timbre signature of a layer, 0..1, read from its own field: where its energy sits (centroid x), how peaky it is (crest)
+   * and how locked it is to its neighbours. The instrument a voice plays is the signature of the layer that drives it.
+   */
+  private sig(l: number): number {
+    const s = this.sim;
+    if (!s) return 0.5;
+    const peak = clamp(((s.crest[l] ?? 1) - 1) / 2.5, 0, 1);
+    const cx = s.cen[l * 3] ?? 0.5;
+    const lk = Math.max(s.lock[l] ?? 0, l > 0 ? s.lock[l - 1] ?? 0 : 0);
+    // Wrapped (fractional) so small field differences reach every patch instead of saturating at one end.
+    const v = cx * 5.3 + peak * 3.1 + lk * 2.3 + l * 0.21;
+    return clamp(v - Math.floor(v), 0, 0.999);
+  }
+
+  /** With little brain share every voice is read from layer 1 alone. */
+  private src(l: number): number {
+    return this.brainNow < 0.3 ? 0 : l;
+  }
+
+  private setPatch(key: "bass" | "comp" | "lead" | "ride", layer: number): void {
+    const table = key === "bass" ? BASS_PATCHES : key === "comp" ? KEYS_PATCHES : key === "lead" ? LEAD_PATCHES : RIDE_PATCHES;
+    const l = this.src(layer);
+    const idx = Math.floor(this.sig(l) * table.length);
+    const ch = key === "ride" ? CH.drums : CH[key];
+    if (idx !== this.patch[key] && key !== "ride") this.program(ch, table[idx]?.gm ?? 0);
+    this.patch[key] = idx;
+    this.patchLayer[key] = l;
+    const label = { bass: "Bass", comp: "Keys", lead: "Lead", ride: "Ride" }[key];
+    this.voices[key].name = `${label} · ${table[idx]?.name ?? ""}`;
+  }
+
+  private program(ch: number, gm: number): void {
+    const out = this.midi;
+    if (out && this.midiOn) out.send([0xc0 | ch, gm]);
+  }
+
+  private describePatches(): void {
+    const nm = (t: readonly Patch[], i: number): string => t[i]?.name ?? "";
+    const L = (l: number): string => `L${l + 1}`;
+    const pl = this.patchLayer;
+    this.patchInfo = `bass ${nm(BASS_PATCHES, this.patch.bass)} (${L(pl.bass)}) · keys ${nm(KEYS_PATCHES, this.patch.comp)} (${L(pl.comp)}) · lead ${nm(LEAD_PATCHES, this.patch.lead)} (${L(pl.lead)}) · ride ${nm(RIDE_PATCHES, this.patch.ride)} (${L(pl.ride)})`;
+  }
+
   private prepareBar(bar: number, f: Features): void {
     const b = bar % 8;
+    this.brainNow = f.brain;
     if (b === 0 || !this.themes.A) this.themes.A = this.readTheme("A", 0, false);
     if (b === 4 || !this.themes.B) {
       let lead = 0;
@@ -327,6 +427,14 @@ export class Band {
       this.themes.B = this.readTheme("B", lead, lead === 0);
     }
     const th = this.themeFor(bar);
+    // The rhythm section changes instrument once per eight-bar form; the soloist changes with every theme.
+    if (b === 0 || bar === 0) {
+      this.setPatch("bass", 0);
+      this.setPatch("comp", 3);
+      this.setPatch("ride", 5);
+    }
+    if (b % 4 === 0 || bar === 0) this.setPatch("lead", th?.layer ?? 0);
+    this.describePatches();
     this.answer = bar % 2 === 1 && th ? this.readTheme(th.name + "'", th.layer, th.layer === 0 && th.name === "B") : null;
     this.themeInfo = `${th?.name ?? "-"}${this.answer ? "'" : ""} (${th?.line ?? "-"}) steps ${th?.deg.join(" ") ?? ""} · sync ${th?.hit.map((h) => (h ? "x" : ".")).join("") ?? ""}`;
   }
@@ -352,9 +460,43 @@ export class Band {
     }
     const accents = this.accents;
     this.accents = [];
-    if (silent) return;
+    const typed = this.typed.shift();
+    if (silent) {
+      this.typed = [];
+      this.echoes = [];
+      return;
+    }
 
     const cur = this.cur;
+    // Typing into layer 1: the typed character is played at once as a note of the current scale (the same letter is always
+    // the same scale degree), then the brain answers: the loudest layer sings it back three slots later, a keys stab follows.
+    if (typed) {
+      const note = this.scaleNote(cur, typed.code);
+      this.leadNote(t, note, 64 + (typed.code % 9) * 5, stepLen * 1.5);
+      this.echoes.push({ step: this.step + 3, kind: "layer", code: typed.code }, { step: this.step + 6, kind: "stab", code: typed.code });
+      this.echoInfo = `typed "${String.fromCharCode(typed.code)}" -> ${note}`;
+    }
+    this.echoes = this.echoes.filter((e) => {
+      if (e.step > this.step) return true;
+      if (e.kind === "layer") {
+        let l = 1;
+        let best = -1;
+        for (let i = 1; i < NUM_LAYERS; i++) {
+          const w = f.rms[i] ?? 0;
+          if (w > best) {
+            best = w;
+            l = i;
+          }
+        }
+        const n = this.layerNote(l, cur, f);
+        if (this.lv.choir >= 0.05) this.choirNote(l, t, n, 74, stepLen * 4);
+        else this.leadNote(t, n - 12, 56, stepLen * 2.5);
+        this.echoInfo = `brain answers with L${l + 1} (note ${n})`;
+      } else {
+        this.comp(t, cur.voicing.slice(-3), 62, stepLen * 2, 3);
+      }
+      return false;
+    });
     const nextChord = progression(f.tension)[(this.chordIndex + 1) % 4] ?? cur;
     const beatDur = 60 / this.bpm;
     const vel = (base: number, span: number): number => Math.round(clamp(base + span * f.d + (this.q(0) - 0.5) * 10, 1, 127));
@@ -449,6 +591,13 @@ export class Band {
     }
   }
 
+  /** A typed character as a note of the current scale: the same character is always the same scale degree. */
+  private scaleNote(cur: Chord, code: number): number {
+    const pool: number[] = [];
+    for (let m = 57; m <= 86; m++) if (cur.scale.includes(m % 12)) pool.push(m);
+    return pool[(code * 7) % pool.length] ?? 69;
+  }
+
   /** The note a layer plays: its measured pitch folded into the layer's register, pulled to the chord by brain health. */
   private layerNote(l: number, cur: Chord, f: Features): number {
     const hz = Number(this.pitchHz[l]) || 220;
@@ -478,7 +627,15 @@ export class Band {
     const lv = this.lv.choir;
     vel = Math.round(vel * lv);
     if (!out || vel < 2) return;
-    this.send(CHOIR_CH[l - 1] ?? 3, midi, vel, t, dur);
+    const pi = Math.floor(this.sig(l) * CHOIR_PATCHES.length);
+    const cp = CHOIR_PATCHES[pi] ?? (CHOIR_PATCHES[0] as (typeof CHOIR_PATCHES)[number]);
+    this.choirPatch[l] = pi;
+    const cch = CHOIR_CH[l - 1] ?? 3;
+    if (this.choirSent[l] !== pi) {
+      this.program(cch, cp.gm);
+      this.choirSent[l] = pi;
+    }
+    this.send(cch, midi, vel, t, dur);
     const ctx = this.ctx;
     const f = mtof(midi);
     const car = ctx.createOscillator();
@@ -486,8 +643,8 @@ export class Band {
     const mg = ctx.createGain();
     const g = ctx.createGain();
     car.frequency.value = f;
-    mod.frequency.value = f * 2;
-    mg.gain.setValueAtTime(f * 0.9, t);
+    mod.frequency.value = f * cp.ratio;
+    mg.gain.setValueAtTime(f * (0.5 + 0.7 * clamp((this.sim?.crest[l] ?? 1) / 3, 0, 1)), t);
     mg.gain.exponentialRampToValueAtTime(f * 0.05, t + dur);
     const a = (0.13 * vel) / 127;
     g.gain.setValueAtTime(0.0001, t);
@@ -508,24 +665,34 @@ export class Band {
     this.voices.bass.level = Math.max(this.voices.bass.level, vel / 127);
     const ctx = this.ctx;
     const f = mtof(midi);
-    const a = (0.55 * vel) / 127;
+    const kind = this.patch.bass;
+    const a = ((kind === 3 ? 0.62 : kind === 2 ? 0.4 : 0.55) * vel) / 127;
     const lp = ctx.createBiquadFilter();
     lp.type = "lowpass";
-    lp.frequency.setValueAtTime(900, t);
-    lp.frequency.exponentialRampToValueAtTime(260, t + dur);
+    const [open, close, q, types] =
+      kind === 1
+        ? ([1500, 600, 0.7, ["sawtooth", "sine"]] as const)
+        : kind === 2
+          ? ([2600, 280, 7, ["square", "sawtooth"]] as const)
+          : kind === 3
+            ? ([420, 300, 0.5, ["sine", "sine"]] as const)
+            : ([900, 260, 0.7, ["triangle", "sine"]] as const);
+    lp.Q.value = q;
+    lp.frequency.setValueAtTime(open, t);
+    lp.frequency.exponentialRampToValueAtTime(close, t + (kind === 2 ? Math.min(dur, 0.25) : dur));
     const g = ctx.createGain();
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(a, t + 0.008);
-    g.gain.exponentialRampToValueAtTime(Math.max(a * 0.35, 0.0002), t + dur * 0.9);
+    g.gain.linearRampToValueAtTime(a, t + (kind === 3 ? 0.02 : 0.008));
+    g.gain.exponentialRampToValueAtTime(Math.max(a * (kind === 2 ? 0.2 : 0.35), 0.0002), t + dur * 0.9);
     g.gain.linearRampToValueAtTime(0.0001, t + dur + 0.06);
-    for (const type of ["triangle", "sine"] as const) {
+    types.forEach((type, i) => {
       const o = ctx.createOscillator();
       o.type = type;
-      o.frequency.value = f;
+      o.frequency.value = i === 1 && kind === 2 ? f * 1.004 : f;
       o.connect(lp);
       o.start(t);
       o.stop(t + dur + 0.08);
-    }
+    });
     lp.connect(g).connect(this.spat.bass.input);
   }
 
@@ -539,25 +706,50 @@ export class Band {
       this.send(CH.comp, midi, vel, tt, dur);
       this.voices.comp.level = Math.max(this.voices.comp.level, vel / 127);
       const f = mtof(midi);
+      const kind = this.patch.comp;
+      const x = vel / 127;
+      const P = [
+        { ratio: 1, i0: 1.2 + x * 1.6, i1: 0.25, itime: 0.5, atk: 0.004, sustain: false, end: 0.9, type: "sine", amp: 1 },
+        { ratio: 4, i0: 0.8 + x * 0.6, i1: 0.02, itime: 0.4, atk: 0.003, sustain: false, end: 1.7, type: "sine", amp: 1.1 },
+        { ratio: 2, i0: 0.35, i1: 0.35, itime: 0.1, atk: 0.02, sustain: true, end: 0, type: "sine", amp: 0.7 },
+        { ratio: 2, i0: 2.2 * (0.6 + x), i1: 0.05, itime: 0.12, atk: 0.002, sustain: false, end: 0.55, type: "triangle", amp: 1.2 },
+        { ratio: 1.003, i0: 0.15, i1: 0.15, itime: 0.1, atk: 0.14, sustain: true, end: 0, type: "sawtooth", amp: 0.4 },
+      ] as const;
+      const pp = P[kind] ?? P[0];
       const car = ctx.createOscillator();
       const mod = ctx.createOscillator();
       const mg = ctx.createGain();
       const g = ctx.createGain();
+      car.type = pp.type;
       car.frequency.value = f;
-      mod.frequency.value = f;
-      const index = (1.2 + (vel / 127) * 1.6) * f;
-      mg.gain.setValueAtTime(index, tt);
-      mg.gain.exponentialRampToValueAtTime(0.25 * f, tt + 0.5);
-      const a = (0.2 * vel) / 127 / Math.sqrt(count);
+      mod.frequency.value = f * pp.ratio;
+      mg.gain.setValueAtTime(pp.i0 * f, tt);
+      mg.gain.exponentialRampToValueAtTime(Math.max(pp.i1, 0.001) * f, tt + pp.itime);
+      const a = (0.2 * x * pp.amp) / Math.sqrt(count);
       g.gain.setValueAtTime(0.0001, tt);
-      g.gain.linearRampToValueAtTime(a, tt + 0.004);
-      g.gain.exponentialRampToValueAtTime(0.0005, tt + 0.9);
+      g.gain.linearRampToValueAtTime(a, tt + pp.atk);
+      let stop: number;
+      if (pp.sustain) {
+        const hold = Math.max(kind === 4 ? dur * 3 : dur, 0.2);
+        g.gain.linearRampToValueAtTime(a * 0.85, tt + hold);
+        g.gain.linearRampToValueAtTime(0.0001, tt + hold + (kind === 4 ? 0.5 : 0.08));
+        stop = tt + hold + (kind === 4 ? 0.55 : 0.1);
+      } else {
+        g.gain.exponentialRampToValueAtTime(0.0005, tt + pp.end);
+        stop = tt + pp.end + 0.05;
+      }
       mod.connect(mg).connect(car.frequency);
-      car.connect(g).connect(this.spat.comp.input);
+      if (kind === 4) {
+        const lp = ctx.createBiquadFilter();
+        lp.type = "lowpass";
+        lp.frequency.value = 1300;
+        car.connect(lp).connect(g);
+      } else car.connect(g);
+      g.connect(this.spat.comp.input);
       car.start(tt);
       mod.start(tt);
-      car.stop(tt + 0.95);
-      mod.stop(tt + 0.95);
+      car.stop(stop);
+      mod.stop(stop);
     });
   }
 
@@ -568,26 +760,36 @@ export class Band {
     this.voices.lead.level = Math.max(this.voices.lead.level, vel / 127);
     const ctx = this.ctx;
     const f = mtof(midi);
+    const kind = this.patch.lead;
     const o = ctx.createOscillator();
-    o.type = "sawtooth";
+    o.type = kind === 1 ? "sine" : kind === 2 || kind === 3 ? "square" : "sawtooth";
     o.frequency.value = f;
     const lfo = ctx.createOscillator();
     const lg = ctx.createGain();
-    lfo.frequency.value = 5.5;
-    lg.gain.value = 10;
+    lfo.frequency.value = kind === 1 ? 5 : 5.5;
+    lg.gain.value = kind === 1 ? 14 : kind === 2 ? 6 : 10;
     lfo.connect(lg).connect(o.detune);
     const lp = ctx.createBiquadFilter();
-    lp.type = "lowpass";
-    lp.Q.value = 2;
-    lp.frequency.setValueAtTime(900 + vel * 14, t);
-    lp.frequency.exponentialRampToValueAtTime(500 + vel * 4, t + dur);
+    if (kind === 2) {
+      lp.type = "bandpass";
+      lp.Q.value = 2.2;
+      lp.frequency.setValueAtTime(800 + vel * 8, t);
+      lp.frequency.linearRampToValueAtTime(1200 + vel * 6, t + 0.08);
+    } else {
+      lp.type = "lowpass";
+      lp.Q.value = kind === 3 ? 1 : kind === 1 ? 0.5 : 2;
+      const base = kind === 1 ? 2600 : kind === 3 ? 1500 : 900 + vel * 14;
+      lp.frequency.setValueAtTime(base, t);
+      lp.frequency.exponentialRampToValueAtTime(kind === 0 ? 500 + vel * 4 : base * 0.8, t + dur);
+    }
     const g = ctx.createGain();
-    const a = (0.16 * vel) / 127;
+    const a = ((kind === 2 ? 0.34 : kind === 1 ? 0.2 : kind === 3 ? 0.14 : 0.16) * vel) / 127;
     g.gain.setValueAtTime(0.0001, t);
-    g.gain.linearRampToValueAtTime(a, t + 0.015);
+    g.gain.linearRampToValueAtTime(a, t + (kind === 1 ? 0.04 : kind === 3 ? 0.03 : 0.015));
     g.gain.linearRampToValueAtTime(a * 0.8, t + dur * 0.7);
     g.gain.linearRampToValueAtTime(0.0001, t + dur + 0.05);
     o.connect(lp).connect(g).connect(this.spat.lead.input);
+    if (kind === 1) this.noiseBurst(t, this.spat.lead.input, 3500, a * 0.12, 0.09);
     o.start(t);
     lfo.start(t);
     o.stop(t + dur + 0.06);
@@ -624,6 +826,17 @@ export class Band {
     this.send(CH.drums, 51, vel, t, 0.3);
     this.voices.ride.level = Math.max(this.voices.ride.level, vel / 127);
     const peak = (0.3 * vel) / 127;
+    const kind = this.patch.ride;
+    if (kind === 1) {
+      // brushes: a soft, low swish with no ping
+      this.noiseBurst(t, this.spat.ride.input, 1800, peak * 1.1, 0.16 * decayScale + 0.12, 3600);
+      return;
+    }
+    if (kind === 2) {
+      // closed hat: short and bright
+      this.noiseBurst(t, this.spat.ride.input, 7500, peak * 0.8, 0.06 * decayScale + 0.03);
+      return;
+    }
     this.noiseBurst(t, this.spat.ride.input, 5000, peak, 0.45 * decayScale + 0.1, 8500);
     const ctx = this.ctx;
     const ping = ctx.createOscillator();
