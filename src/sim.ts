@@ -16,6 +16,11 @@ const GAIN_MAX = 2;
 const BED0 = 0.5; // initial (flat) sand height; the bed is a conserved quantity
 const BED_MAX = 1.2; // soft capacity: sand cannot be pushed into cells that are already this full
 const SAND_EVERY = 3; // sim steps per sand step (sand is slow)
+const SAND_KAPPA = 2.5; // how strongly a sand dune raises the coupling between two layers at that spot
+const SAND_REWARD = 2; // sand transport per unit of reward hormone and coherence difference
+
+/** Where the learning lives: a gain per link, the sand beds (a coupling field per cell), or both. */
+export type MemoryMode = "gain" | "sand" | "both";
 
 export type Vec3 = [number, number, number];
 
@@ -40,6 +45,7 @@ export class Simulation {
   private energy: Float32Array[] = [];
   private cscale: Float32Array[] = [];
   private delta = new Float32Array(0);
+  private delta2 = new Float32Array(0);
   private sandPhase = 0;
   readonly cen = new Float32Array(NUM_LAYERS * 3).fill(0.5); // energy centroid (x, y, z) in 0..1 per layer
 
@@ -75,6 +81,17 @@ export class Simulation {
   private readonly past: Float32Array[] = [];
   private pastClock = 0;
 
+  /**
+   * Sand memory. Between layer l and l+1 the coupling at cell i is multiplied by cpl[l][i], which grows where the sand of both
+   * beds is piled up and shrinks in their hollows (the stack is a 3D medium, x and y plus the layer axis, whose vertical
+   * conductivity is carved in sand). `corr[l]` is a trace of how in-phase the two layers are at each cell. A reward hormone
+   * carries sand towards cells where the layers cooperate (a negative one away from them); mass is conserved, only redistributed.
+   */
+  memory: MemoryMode = "sand";
+  private cpl: Float32Array[] = [];
+  private corr: Float32Array[] = [];
+  private pastBeds: Float32Array[][] = [];
+
   private painPos: Vec3 = [0.5, 0.5, 0.5];
   private painUntil = 0;
 
@@ -94,6 +111,10 @@ export class Simulation {
     this.energy = Array.from({ length: NUM_LAYERS }, () => new Float32Array(this.plane));
     this.cscale = Array.from({ length: NUM_LAYERS }, () => new Float32Array(this.plane).fill(1));
     this.delta = new Float32Array(this.plane);
+    this.delta2 = new Float32Array(this.plane);
+    this.cpl = Array.from({ length: NUM_LAYERS - 1 }, () => new Float32Array(this.plane).fill(1));
+    this.corr = Array.from({ length: NUM_LAYERS - 1 }, () => new Float32Array(this.plane));
+    this.pastBeds = [];
     this.rms.fill(0);
     this.stability.fill(1);
   }
@@ -163,6 +184,9 @@ export class Simulation {
     const kE = p.sandErosion * 0.15;
     const kL = p.sandLevel * 0.12;
     const delta = this.delta;
+    const useSand = this.memory !== "gain";
+    if (useSand) this.updateCorrelation();
+    const attend = this.t < this.focusUntil ? this.focus : -1;
     for (let l = 0; l < NUM_LAYERS; l++) {
       const u = this.u[l];
       const v = this.v[l];
@@ -182,7 +206,13 @@ export class Simulation {
         }
         e[i] = (e[i] ?? 0) * 0.95 + acc * inv * 0.05;
       }
-      if (kE > 0 || kL > 0) {
+      // Reward hormone: sand climbs the gradient of "where my neighbour layers cooperate with me".
+      const rk = useSand && this.dopa !== 0 ? SAND_REWARD * this.dopa * (attend >= 0 && (l === attend || l === attend - 1 || l === attend + 1) ? 2 : 1) : 0;
+      const ca = l > 0 ? this.corr[l - 1] : undefined;
+      const cb = l < NUM_LAYERS - 1 ? this.corr[l] : undefined;
+      const target = rk !== 0 ? this.delta2 : undefined;
+      if (target) for (let i = 0; i < plane; i++) target[i] = ((ca?.[i] ?? 0) + (cb?.[i] ?? 0)) / ((ca ? 1 : 0) + (cb ? 1 : 0));
+      if (kE > 0 || kL > 0 || target) {
         delta.fill(0);
         const face = (i: number, j: number): void => {
           const bi = bed[i] ?? 0;
@@ -196,6 +226,10 @@ export class Simulation {
             const gate = 1 - Math.exp(-tot / 0.01);
             const k = kE * gate * rel;
             f += k > 0 ? k * bi * Math.max(0, 1 - bj / BED_MAX) : k * bj * Math.max(0, 1 - bi / BED_MAX);
+          }
+          if (target) {
+            const d = clamp(rk * ((target[i] ?? 0) - (target[j] ?? 0)), -0.2, 0.2);
+            f -= d > 0 ? d * bj * Math.max(0, 1 - bi / BED_MAX) : d * bi * Math.max(0, 1 - bj / BED_MAX);
           }
           delta[i] = (delta[i] ?? 0) - f;
           delta[j] = (delta[j] ?? 0) + f;
@@ -216,6 +250,49 @@ export class Simulation {
       } else {
         cs.fill(1);
       }
+    }
+    if (useSand) this.updateCoupling();
+  }
+
+  /** Trace of how in-phase layer l and l+1 are at each cell (-1..1), gated by how much wave energy is there. */
+  private updateCorrelation(): void {
+    const { plane, nz } = this;
+    for (let l = 0; l < NUM_LAYERS - 1; l++) {
+      const a = this.u[l];
+      const b = this.u[l + 1];
+      const c = this.corr[l];
+      if (!a || !b || !c) continue;
+      for (let i = 0; i < plane; i++) {
+        let num = 0;
+        let den = 0;
+        for (let z = 0; z < nz; z++) {
+          const x = a[i + z * plane] ?? 0;
+          const y = b[i + z * plane] ?? 0;
+          num += x * y;
+          den += x * x + y * y;
+        }
+        const inst = (2 * num) / (den + 1e-9) * (1 - Math.exp(-den / (0.004 * nz)));
+        c[i] = (c[i] ?? 0) * 0.97 + 0.03 * inst;
+      }
+    }
+  }
+
+  /** The coupling field carved by the sand: above-average sand in both beds opens the link at that cell, hollows close it. */
+  private updateCoupling(): void {
+    const { plane } = this;
+    const mean = (b: Float32Array): number => {
+      let s = 0;
+      for (let i = 0; i < plane; i++) s += b[i] ?? 0;
+      return Math.max(s / plane, 1e-6);
+    };
+    for (let l = 0; l < NUM_LAYERS - 1; l++) {
+      const a = this.bed[l];
+      const b = this.bed[l + 1];
+      const c = this.cpl[l];
+      if (!a || !b || !c) continue;
+      const ma = mean(a);
+      const mb = mean(b);
+      for (let i = 0; i < plane; i++) c[i] = clamp(Math.exp(SAND_KAPPA * (0.5 * ((a[i] ?? 0) / ma + (b[i] ?? 0) / mb) - 1)), 0.3, 2.5);
     }
   }
 
@@ -398,12 +475,90 @@ export class Simulation {
       const old = this.past[Math.max(0, this.past.length - 6)];
       if (old) for (let l = 0; l < NUM_LAYERS; l++) this.gain[l] = (this.gain[l] ?? 1) + 0.35 * Math.min(1, -amount) * ((old[l] ?? 1) - (this.gain[l] ?? 1));
     }
+    if (amount < 0 && this.memory !== "gain") {
+      // The sand slides part of the way back to how the beds lay some seconds ago (same mass, so nothing is lost).
+      const old = this.pastBeds[Math.max(0, this.pastBeds.length - 6)];
+      const f = 0.35 * Math.min(1, -amount);
+      if (old) {
+        for (let l = 0; l < NUM_LAYERS; l++) {
+          const b = this.bed[l];
+          const o = old[l];
+          if (b && o && b.length === o.length) for (let i = 0; i < b.length; i++) b[i] = (b[i] ?? 0) + f * ((o[i] ?? 0) - (b[i] ?? 0));
+        }
+        this.updateCoupling();
+      }
+    }
+  }
+
+  /** Chooses where the learning lives. Switching away from the sand leaves the beds as they are, but they stop steering the coupling. */
+  setMemory(mode: MemoryMode): void {
+    this.memory = mode;
+    if (mode === "gain") for (const c of this.cpl) c.fill(1);
+    else this.updateCoupling();
+  }
+
+  /**
+   * How strongly the links are coupled where it matters: the learned gain of the link in gain mode, or, in sand mode, the
+   * coupling at the cells where the two layers have recently been in phase (1 = innate).
+   */
+  learned(l: number): number {
+    const g = this.memory === "sand" ? 1 : this.gain[l] ?? 1;
+    if (this.memory === "gain") return g;
+    const c = this.cpl[l];
+    const r = this.corr[l];
+    if (!c || !r) return g;
+    let num = 0;
+    let den = 0;
+    for (let i = 0; i < c.length; i++) {
+      const w = Math.max(0, r[i] ?? 0);
+      num += w * (c[i] ?? 1);
+      den += w;
+    }
+    return g * (den > 1e-6 ? num / den : 1);
+  }
+
+  /** The coupling field of link l (between layer l and l+1) over the tank plane, 1 = innate. */
+  couplingMap(l: number): Float32Array | undefined {
+    return this.cpl[l];
+  }
+
+  /** The sand memory as bytes (one per cell, per layer), for keeping it between sessions. */
+  exportSand(): string {
+    const bytes = new Uint8Array(NUM_LAYERS * this.plane);
+    for (let l = 0; l < NUM_LAYERS; l++) {
+      const b = this.bed[l];
+      if (b) for (let i = 0; i < this.plane; i++) bytes[l * this.plane + i] = Math.round(clamp((b[i] ?? 0) / BED_MAX, 0, 1) * 255);
+    }
+    let bin = "";
+    for (const x of bytes) bin += String.fromCharCode(x);
+    return btoa(bin);
+  }
+
+  importSand(text: string): void {
+    const bin = atob(text);
+    if (bin.length !== NUM_LAYERS * this.plane) return;
+    for (let l = 0; l < NUM_LAYERS; l++) {
+      const b = this.bed[l];
+      if (!b) continue;
+      let sum = 0;
+      for (let i = 0; i < this.plane; i++) {
+        b[i] = (bin.charCodeAt(l * this.plane + i) / 255) * BED_MAX;
+        sum += b[i] ?? 0;
+      }
+      const k = (BED0 * this.plane) / Math.max(sum, 1e-6); // quantisation must not create or destroy sand
+      for (let i = 0; i < this.plane; i++) b[i] = (b[i] ?? 0) * k;
+    }
+    this.updateCoupling();
   }
 
   /** Forgets everything the tanks learned: the wiring is innate again. */
   forgetWiring(): void {
     this.gain.fill(1);
     this.past.length = 0;
+    this.pastBeds = [];
+    for (const c of this.corr) c.fill(0);
+    this.flattenSand();
+    this.updateCoupling();
     this.elig.fill(0);
     this.dopa = 0;
   }
@@ -422,7 +577,7 @@ export class Simulation {
     for (let l = 0; l < n; l++) {
       const near = attend >= 0 && (l === attend || l === attend - 1) ? 2.5 : 1;
       let g = this.gain[l] ?? 1;
-      g += 0.008 * dt * this.dopa * near * ((this.elig[l] ?? 0) / Math.max(mean, 0.05));
+      if (this.memory !== "sand") g += 0.008 * dt * this.dopa * near * ((this.elig[l] ?? 0) / Math.max(mean, 0.05));
       g += (1 - g) * (1 - Math.exp(-dt / 900));
       this.gain[l] = clamp(g, GAIN_MIN, GAIN_MAX);
     }
@@ -431,6 +586,10 @@ export class Simulation {
       this.pastClock = 0;
       this.past.push(Float32Array.from(this.gain));
       if (this.past.length > 15) this.past.shift();
+      if (this.memory !== "gain") {
+        this.pastBeds.push(this.bed.map((b) => Float32Array.from(b)));
+        if (this.pastBeds.length > 15) this.pastBeds.shift();
+      }
     }
   }
 
@@ -474,8 +633,12 @@ export class Simulation {
       const cf = 0.3 + 0.3 * (l / (NUM_LAYERS - 1));
       const c2 = (cf * cf) / nAxes;
       const cs = p.sandDepth > 0 ? this.cscale[l] : undefined;
-      const kU = l > 0 ? Math.min(MAX_LEARNED, kUp * (this.gain[l - 1] ?? 1)) : 0;
-      const kD = l < NUM_LAYERS - 1 ? Math.min(MAX_LEARNED, kDown * (this.gain[l] ?? 1)) : 0;
+      const gu = this.memory === "sand" ? 1 : this.gain[l - 1] ?? 1;
+      const gd = this.memory === "sand" ? 1 : this.gain[l] ?? 1;
+      const kU = l > 0 ? Math.min(MAX_LEARNED, kUp * gu) : 0;
+      const kD = l < NUM_LAYERS - 1 ? Math.min(MAX_LEARNED, kDown * gd) : 0;
+      const cplU = this.memory !== "gain" && l > 0 ? this.cpl[l - 1] : undefined;
+      const cplD = this.memory !== "gain" && l < NUM_LAYERS - 1 ? this.cpl[l] : undefined;
       const gamma = p.damping + stab * 0.03 * sPrev;
       const ks = stab * 0.004 * sPrev;
 
@@ -489,8 +652,9 @@ export class Simulation {
             if (hasY) lap += (u[i - sy] ?? 0) + (u[i + sy] ?? 0) - 2 * c;
             if (hasZ) lap += (u[i - sz] ?? 0) + (u[i + sz] ?? 0) - 2 * c;
             let a = (cs ? c2 * (cs[x + y * nx] ?? 1) : c2) * lap - ks * c - gamma * (v[i] ?? 0);
-            if (below) a += kU * ((below[i] ?? 0) - c);
-            if (above) a += kD * ((above[i] ?? 0) - c);
+            const pi = x + y * nx;
+            if (below) a += (cplU ? Math.min(MAX_LEARNED, kU * (cplU[pi] ?? 1)) : kU) * ((below[i] ?? 0) - c);
+            if (above) a += (cplD ? Math.min(MAX_LEARNED, kD * (cplD[pi] ?? 1)) : kD) * ((above[i] ?? 0) - c);
             if (kCtx > 0) a += kCtx * ((ctx[i] ?? 0) - c);
             v[i] = (v[i] ?? 0) + a;
           }

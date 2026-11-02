@@ -2,12 +2,12 @@
 // a series of "nice" hormone shots, the control gets none. Afterwards the phase lock between neighbouring layers is compared.
 
 import { NUM_LAYERS, type Params } from "./model";
-import { Simulation } from "./sim";
+import { Simulation, type MemoryMode } from "./sim";
 
 export interface ProofStats {
   lock: number; // mean phase lock of the nine links, measured at the end
   align: number; // context alignment
-  gain: number; // mean learned coupling gain
+  gain: number; // mean learned coupling (Simulation.learned)
 }
 
 export interface ProofResult {
@@ -21,8 +21,9 @@ const STEPS = 4; // simulation steps per observation, as in the live loop
 const DT = 1 / 30; // seconds per observation in the live loop
 const seconds = (s: number): number => Math.round(s / DT);
 
-async function run(p: Params, nice: number, focus: number, tick: () => Promise<void>): Promise<ProofStats & { gains: number[] }> {
+async function run(p: Params, nice: number, focus: number, memory: MemoryMode, tick: () => Promise<void>): Promise<ProofStats & { gains: number[] }> {
   const sim = new Simulation(2);
+  sim.setMemory(memory);
   sim.fire(focus);
   const lock = Array.from({ length: NUM_LAYERS - 1 }, () => 0);
   let align = 0;
@@ -40,7 +41,7 @@ async function run(p: Params, nice: number, focus: number, tick: () => Promise<v
     }
     if (k % 45 === 0) await tick();
   }
-  const gains = Array.from(sim.gain).slice(0, NUM_LAYERS - 1);
+  const gains = Array.from({ length: NUM_LAYERS - 1 }, (_, l) => sim.learned(l));
   return {
     lock: lock.reduce((a, b) => a + b, 0) / lock.length / Math.max(1, count),
     align: align / Math.max(1, count),
@@ -50,7 +51,7 @@ async function run(p: Params, nice: number, focus: number, tick: () => Promise<v
 }
 
 /** Runs `pairs` control/trained pairs with the given settings and averages them. `progress` gets a status line. */
-export async function proveLearning(p: Params, pairs: number, progress: (text: string) => void, tick: () => Promise<void> = () => new Promise((r) => setTimeout(r, 0))): Promise<ProofResult> {
+export async function proveLearning(p: Params, pairs: number, progress: (text: string) => void, memory: MemoryMode = "gain", tick: () => Promise<void> = () => new Promise((r) => setTimeout(r, 0))): Promise<ProofResult> {
   const sum = (a: ProofStats, b: ProofStats): ProofStats => ({ lock: a.lock + b.lock, align: a.align + b.align, gain: a.gain + b.gain });
   const zero = { lock: 0, align: 0, gain: 0 };
   let control: ProofStats = zero;
@@ -58,9 +59,9 @@ export async function proveLearning(p: Params, pairs: number, progress: (text: s
   let gains = Array.from({ length: NUM_LAYERS - 1 }, () => 0);
   for (let i = 0; i < pairs; i++) {
     progress(`pair ${i + 1} of ${pairs}: control without reward...`);
-    control = sum(control, await run(p, 0, 8, tick));
+    control = sum(control, await run(p, 0, 8, memory, tick));
     progress(`pair ${i + 1} of ${pairs}: eight nice shots on L9...`);
-    const t = await run(p, 8, 8, tick);
+    const t = await run(p, 8, 8, memory, tick);
     trained = sum(trained, t);
     gains = gains.map((g, l) => g + (t.gains[l] ?? 1) / pairs);
   }

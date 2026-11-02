@@ -5,7 +5,7 @@ import { Exerciser } from "./exerciser";
 import { setSnapshot } from "./feedback";
 import { proveLearning } from "./proof";
 import { Scope, TankView } from "./render";
-import { Simulation, type Vec3 } from "./sim";
+import { Simulation, type MemoryMode, type Vec3 } from "./sim";
 import { buildControls, helpButton, hideHelp, showHelp } from "./ui";
 
 function $(id: string): HTMLElement {
@@ -364,21 +364,34 @@ function stepFrame(n: number): void {
 let lastFrame = performance.now();
 let lastObserve = lastFrame;
 
-// The learned wiring (gain of each inter-layer coupling) survives a reload.
-const WIRING_KEY = "eftelaing-dust.tanks.v1";
+// The learned wiring survives a reload: the memory mode, the per-link gains and the sand beds (the sand memory).
+const WIRING_KEY = "eftelaing-dust.tanks.v2";
 try {
-  const saved: unknown = JSON.parse(localStorage.getItem(WIRING_KEY) ?? "null");
-  if (Array.isArray(saved)) saved.forEach((v, i) => { if (typeof v === "number" && i < sim.gain.length) sim.gain[i] = Math.min(2, Math.max(0.5, v)); });
+  const saved = JSON.parse(localStorage.getItem(WIRING_KEY) ?? "null") as { mode?: unknown; gain?: unknown; sand?: unknown } | null;
+  if (saved && typeof saved === "object") {
+    if (saved.mode === "gain" || saved.mode === "sand" || saved.mode === "both") sim.setMemory(saved.mode);
+    if (Array.isArray(saved.gain)) saved.gain.forEach((v: unknown, i: number) => { if (typeof v === "number" && i < sim.gain.length) sim.gain[i] = Math.min(2, Math.max(0.5, v)); });
+    if (typeof saved.sand === "string") sim.importSand(saved.sand);
+  }
 } catch { /* no saved wiring */ }
 let wiringSavedAt = lastFrame;
 function saveWiring(nowMs: number): void {
   if (nowMs - wiringSavedAt < 20000) return;
   wiringSavedAt = nowMs;
-  try { localStorage.setItem(WIRING_KEY, JSON.stringify(Array.from(sim.gain))); } catch { /* storage full or blocked */ }
+  try { localStorage.setItem(WIRING_KEY, JSON.stringify({ mode: sim.memory, gain: Array.from(sim.gain), sand: sim.memory === "gain" ? "" : sim.exportSand() })); } catch { /* storage full or blocked */ }
 }
 
-// Learning card: reward hormone level, the nine learned couplings (dashed line = innate 1.0) and an A/B proof experiment.
+// Learning card: reward hormone level, the nine learned couplings (dashed line = innate 1.0), the sand coupling map and an A/B proof experiment.
 const learnRoot = $("learn");
+const memSelect = document.createElement("select");
+for (const [v, t] of [["sand", "Memory in the sand beds"], ["gain", "Memory in link gains"], ["both", "Sand beds and link gains"]] as const) {
+  const o = document.createElement("option");
+  o.value = v;
+  o.textContent = t;
+  memSelect.append(o);
+}
+memSelect.value = sim.memory;
+memSelect.addEventListener("change", () => sim.setMemory(memSelect.value as MemoryMode));
 const dopaBar = document.createElement("div");
 dopaBar.className = "dopa";
 const dopaFill = document.createElement("div");
@@ -402,33 +415,43 @@ for (let l = 0; l < NUM_LAYERS - 1; l++) {
   gainBars.push(bar);
   gainRow.append(col);
 }
+const mapCanvas = document.createElement("canvas");
+mapCanvas.className = "cpl-map";
+mapCanvas.title = "Coupling carved in the sand between the selected layer and the one above it: bright = strongly coupled there, dark = closed.";
+const mapCtx = mapCanvas.getContext("2d");
 const learnOut = document.createElement("div");
 learnOut.className = "learn-out";
-learnOut.textContent = "Click Nice or Try again and watch the hormone and the couplings move. Prove it runs a control against a rewarded copy.";
+learnOut.textContent = "Click Nice or Try again and watch the hormone, the couplings and the sand map move. Prove it runs a control against a rewarded copy.";
 let proving = false;
 const proveBtn = button("Prove it (A/B experiment)", "small", () => {
   if (proving) return;
   proving = true;
   proveBtn.disabled = true;
-  void proveLearning(params, 1, (t) => { learnOut.textContent = t; })
+  void proveLearning(params, 1, (t) => { learnOut.textContent = t; }, sim.memory)
     .then((r) => {
       const gain = (r.trained.lock / Math.max(1e-6, r.control.lock) - 1) * 100;
       learnOut.innerHTML =
         `Phase lock between layers: <b>${r.control.lock.toFixed(3)}</b> without reward, <b>${r.trained.lock.toFixed(3)}</b> after 8 Nice shots on L9 (${gain >= 0 ? "+" : ""}${gain.toFixed(0)}%). ` +
-        `Mean coupling gain ${r.control.gain.toFixed(2)} to ${r.trained.gain.toFixed(2)}.`;
+        `Coupling where the layers cooperate: ${r.control.gain.toFixed(2)} to ${r.trained.gain.toFixed(2)} (${sim.memory}).`;
     })
     .catch((e: unknown) => { learnOut.textContent = `Experiment failed: ${String(e)}`; })
     .finally(() => { proving = false; proveBtn.disabled = false; });
 });
 const forgetBtn = button("Forget learned wiring", "small", () => {
   sim.forgetWiring();
-  learnOut.textContent = "The wiring is back to its innate state.";
+  learnOut.textContent = "The wiring is back to its innate state and the sand is level again.";
 });
-learnRoot.append(dopaBar, gainRow, proveBtn, forgetBtn, learnOut);
+const learnBtns = document.createElement("div");
+learnBtns.className = "learn-btns";
+learnBtns.append(memSelect, proveBtn, forgetBtn);
+const learnBody = document.createElement("div");
+learnBody.className = "learn-body";
+learnBody.append(gainRow, mapCanvas);
+learnRoot.append(dopaBar, learnBody, learnBtns, learnOut);
 $("learn-help").append(
   helpButton(
-    "Reward hormone",
-    "Nice injects a shot of a reward hormone (dopamine) that decays in about 6 seconds. While it is high, the coupling between layers that were recently phase-locked is strengthened, most strongly next to the layer you are watching (three-factor rule with eligibility traces). Try again injects a negative shot: it weakens the same links and rolls the wiring part-way back to how it was ~12 s ago. Slow forgetting pulls everything back towards the innate wiring, so the brain stays creative. The band reads the layer phase locks, so the changed wiring changes the music. Nice also teaches the band's taste for patterns and the Monte Carlo model. The bars show the nine couplings (dashed = innate). Prove it runs a control simulation against a copy that gets eight Nice shots, then compares the phase lock.",
+    "Reward hormone and sand memory",
+    "Nice injects a shot of a reward hormone (dopamine) that decays in about 6 seconds; Try again injects a negative one. Where the learning lives is your choice. Sand beds (default): between two layers the coupling at each spot is carved by the sand of both beds (dunes open the link, hollows close it; the stack is a 3D medium whose vertical conductivity is made of sand). Positive hormone makes the sand of a layer climb towards spots where it has recently been in phase with its neighbours (negative hormone moves it away, and slides the beds part-way back to ~12 s ago). Sand is only redistributed, never created or destroyed, and the usual levelling slowly forgets. No back-propagation, only waves, sand and a hormone. Link gains: one learned number per link (three-factor rule). The bars show the coupling where the layers cooperate (dashed = innate); the picture is the coupling map of the selected link. The band reads the layer phase locks, so the learned wiring changes the music. Nice also teaches the band's taste and the Monte Carlo model. Prove it runs a control simulation against a copy that gets eight Nice shots on L9 and compares the phase lock.",
   ),
 );
 function drawLearning(): void {
@@ -436,7 +459,24 @@ function drawLearning(): void {
   dopaFill.style.background = d >= 0 ? "#ffd56a" : "#6aa8ff";
   dopaFill.style.left = d >= 0 ? "50%" : `${50 + (d / 2.5) * 50}%`;
   dopaFill.style.width = `${(Math.abs(d) / (d >= 0 ? 4 : 2.5)) * 50}%`;
-  gainBars.forEach((b, l) => { b.style.height = `${((sim.gain[l] ?? 1) / 2) * 100}%`; });
+  gainBars.forEach((b, l) => { b.style.height = `${(Math.min(2, sim.learned(l)) / 2) * 100}%`; });
+  const map = sim.couplingMap(Math.min(selected, NUM_LAYERS - 2));
+  if (mapCtx && map && sim.memory !== "gain") {
+    if (mapCanvas.width !== sim.nx || mapCanvas.height !== sim.ny) {
+      mapCanvas.width = sim.nx;
+      mapCanvas.height = sim.ny;
+    }
+    const img = mapCtx.createImageData(sim.nx, sim.ny);
+    for (let i = 0; i < sim.nx * sim.ny; i++) {
+      const v = Math.round(Math.min(1, Math.max(0, ((map[i] ?? 1) - 0.3) / 2.2)) * 255);
+      img.data[i * 4] = v;
+      img.data[i * 4 + 1] = Math.round(v * 0.85);
+      img.data[i * 4 + 2] = Math.round(60 + v * 0.3);
+      img.data[i * 4 + 3] = 255;
+    }
+    mapCtx.putImageData(img, 0, 0);
+    mapCanvas.style.visibility = "visible";
+  } else mapCanvas.style.visibility = "hidden";
 }
 
 function tick(): void {
