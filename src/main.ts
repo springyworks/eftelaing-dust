@@ -92,7 +92,26 @@ for (let i = NUM_LAYERS - 1; i >= 0; i--) {
   box.className = "thumb";
   const canvas = document.createElement("canvas");
   const caption = document.createElement("div");
-  caption.textContent = `L${info.id} ${info.name}`;
+  caption.className = "thumb-cap";
+  const name = document.createElement("span");
+  name.textContent = `L${info.id} ${info.name}`;
+  // "Switch this layer off": decouples and damps its tank to flat (sand stays put), to hear and see whether the band
+  // really answers to the layers, not just to its own style tables. Click toggles; it never deletes the sand memory.
+  const muteBtn = document.createElement("button");
+  muteBtn.className = "thumb-mute";
+  muteBtn.title = `Switch L${info.id} off/on (test: does the band really follow this layer?)`;
+  muteBtn.textContent = "⏻";
+  const syncMute = (): void => {
+    const off = sim.muted[i] ?? false;
+    box.classList.toggle("off", off);
+    muteBtn.classList.toggle("active", off);
+  };
+  muteBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    sim.muted[i] = !sim.muted[i];
+    syncMute();
+  });
+  caption.append(name, muteBtn);
   box.append(canvas, caption);
   box.addEventListener("click", () => {
     // A tap on the picture also pokes that layer at the tapped spot (see attachScratch); a drag scratches it instead.
@@ -192,6 +211,7 @@ setSnapshot(() => ({
   bpm: audio.band ? Math.round(audio.band.bpm) : null,
   instruments: audio.band?.patchInfo ?? "",
   harmony: audio.band?.harmonyNow ?? "",
+  arrangement: audio.band?.arrangementInfo ?? "",
   theme: audio.band?.themeInfo ?? "",
   style: audio.band?.styleInfo ?? "",
   phrase: audio.band?.phraseInfo ?? "",
@@ -215,7 +235,7 @@ function sayToast(text: string, ms = 5000): void {
   toastTimer = window.setTimeout(() => (toast.style.opacity = "0"), ms);
 }
 startRemote(params, {
-  snapshot: () => ({ style: audio.band?.styleInfo ?? "", phrase: audio.band?.phraseInfo ?? "", chord: audio.chord, instruments: audio.band?.patchInfo ?? "", harmony: audio.band?.harmonyNow ?? "", personality: audio.band?.personalityInfo ?? "", soundOn: audio.enabled, solver: sim.solver, voice: voicePanel.info(), beat: beatInfo(), learning: { memory: sim.memory, dopa: Number(sim.dopa.toFixed(2)), rewards: sim.rewards } }),
+  snapshot: () => ({ style: audio.band?.styleInfo ?? "", phrase: audio.band?.phraseInfo ?? "", chord: audio.chord, instruments: audio.band?.patchInfo ?? "", harmony: audio.band?.harmonyNow ?? "", arrangement: audio.band?.arrangementInfo ?? "", personality: audio.band?.personalityInfo ?? "", soundOn: audio.enabled, solver: sim.solver, voice: voicePanel.info(), beat: beatInfo(), learning: { memory: sim.memory, dopa: Number(sim.dopa.toFixed(2)), rewards: sim.rewards } }),
   applied: () => controls.syncAll(),
   say: (text) => sayToast(text),
 });
@@ -775,7 +795,7 @@ function tick(): void {
       const cues = binauralCues(sv.az, sv.el);
       $("cues").innerHTML =
         `Selected: <b>L${selected + 1}</b><br>azimuth <b>${sv.az.toFixed(0)}°</b> elevation <b>${sv.el.toFixed(0)}°</b><br>distance <b>${sv.r.toFixed(1)} m</b><br>` +
-        `ITD <b>${Math.abs(cues.itdUs).toFixed(0)} µs</b> ${cues.itdUs >= 0 ? "(right ear first)" : "(left ear first)"}<br>ILD <b>${cues.ildDb.toFixed(1)} dB</b><br>pinna notch <b>${(cues.notchHz / 1000).toFixed(1)} kHz</b><br>chord <b>${audio.chord}</b><br>theme <b>${audio.band?.themeInfo ?? "-"}</b><br>harmony <b>${audio.band?.harmonyNow || "-"}</b><br>style <b>${audio.band?.styleInfo ?? "-"}</b><br>phrase <b>${audio.band?.phraseInfo || "-"}</b><br>brain <b>${audio.band?.personalityInfo ?? "-"}</b><br>instruments <b>${audio.band?.patchInfo || "-"}</b>${audio.band?.echoInfo ? `<br>typing <b>${audio.band.echoInfo}</b>` : ""}<br>band <b>${audio.band ? audio.band.bpm.toFixed(0) : "-"} bpm</b>${audio.band?.midiName ? `<br>MIDI <b>${audio.band.midiName}</b>` : ""}`;
+        `ITD <b>${Math.abs(cues.itdUs).toFixed(0)} µs</b> ${cues.itdUs >= 0 ? "(right ear first)" : "(left ear first)"}<br>ILD <b>${cues.ildDb.toFixed(1)} dB</b><br>pinna notch <b>${(cues.notchHz / 1000).toFixed(1)} kHz</b><br>chord <b>${audio.chord}</b><br>theme <b>${audio.band?.themeInfo ?? "-"}</b><br>harmony <b>${audio.band?.harmonyNow || "-"}</b><br>arrangement <b>${audio.band?.arrangementInfo || "-"}</b><br>style <b>${audio.band?.styleInfo ?? "-"}</b><br>phrase <b>${audio.band?.phraseInfo || "-"}</b><br>brain <b>${audio.band?.personalityInfo ?? "-"}</b><br>instruments <b>${audio.band?.patchInfo || "-"}</b>${audio.band?.echoInfo ? `<br>typing <b>${audio.band.echoInfo}</b>` : ""}<br>band <b>${audio.band ? audio.band.bpm.toFixed(0) : "-"} bpm</b>${audio.band?.midiName ? `<br>MIDI <b>${audio.band.midiName}</b>` : ""}`;
     }
     $("ro-relief").textContent = sim.sandRelief(selected).toFixed(3);
     $("ro-sand").textContent = sim.sandMass(selected).toFixed(1);

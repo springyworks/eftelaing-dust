@@ -65,6 +65,9 @@ export class Simulation {
   readonly activity = new Float32Array(NUM_LEVELS * NUM_LAYERS);
   mapping = defaultMapping();
   alignment = 0;
+  /** A muted layer's tank is decoupled and damped to silence (sand stays, only the water stops): a true "what if we switch
+   *  this layer off" experiment, not a mix-level mute, so you can hear and see whether the band really follows the layers. */
+  readonly muted: boolean[] = new Array(NUM_LAYERS).fill(false);
   private readonly vel = new Float32Array(NUM_LAYERS);
 
   /**
@@ -691,6 +694,21 @@ export class Simulation {
       out[o + 5] = p.sandDepth > 0 ? 1 : 0;
       out[o + 6] = this.memory !== "gain" && l > 0 ? 1 : 0;
       out[o + 7] = this.memory !== "gain" && l < NUM_LAYERS - 1 ? 1 : 0;
+    }
+    // A muted layer loses its own wave speed and both couplings (so it decays smoothly to flat and stops driving
+    // anything), and its neighbours lose the coupling that would otherwise pull energy from it, so it is cleanly out of
+    // the stack. The damping/restoring values are hand-tuned to the explicit step below: strong enough to flatten in
+    // well under a second, not so strong that the discrete update overshoots and rings (large damping can do that).
+    for (let l = 0; l < NUM_LAYERS; l++) {
+      if (!this.muted[l]) continue;
+      const o = l * 8;
+      out[o] = 0;
+      out[o + 1] = 0.4;
+      out[o + 2] = 0.06;
+      out[o + 3] = 0;
+      out[o + 4] = 0;
+      if (l > 0) out[(l - 1) * 8 + 4] = 0;
+      if (l < NUM_LAYERS - 1) out[(l + 1) * 8 + 3] = 0;
     }
     return { layer: out, kCtx: 0.03 * psy };
   }

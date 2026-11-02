@@ -221,6 +221,14 @@ export class Band {
   private heat = 0;
   harmonyInfo = "";
   harmonyNow = "";
+  // A slow arrangement arc (minutes, not bars): rises while layers 6/7 (Presentation, Application) run hotter than
+  // their own recent average, falls back when they quiet down, and always drifts towards a neutral middle so it never
+  // gets stuck. Sparse at low build (just bass and ride), the full band joins in as it climbs.
+  private buildFast = 0.3;
+  private buildSlow = 0.3;
+  private buildLevel = 0.35;
+  private lastUpdateT = -1;
+  arrangementInfo = "";
   private kickPat = 0;
   // Smoothed loudness of every voice, so the exerciser can tell which one dominates the mix.
   private readonly loud: Record<VoiceKey | "choir", number> = { bass: 0, comp: 0, lead: 0, ride: 0, choir: 0 };
@@ -315,7 +323,18 @@ export class Band {
     };
     this.pitchHz = pitchHz;
     this.sim = sim;
-    this.lv = { bass: p.bandBass, comp: p.bandKeys, lead: p.bandLead, ride: p.bandDrums, choir: p.bandChoir * brain };
+    // Layers 6 and 7 (Presentation, Application) drive a slow build/release arc: a real band gets denser and fuller as
+    // the upper layers heat up, and strips back down when they settle, instead of sitting at one unchanging density.
+    const dtReal = this.lastUpdateT < 0 ? 0 : clamp(now - this.lastUpdateT, 0, 0.5);
+    this.lastUpdateT = now;
+    const upper67 = ((rms[5] ?? 0) + (rms[6] ?? 0)) / 2;
+    this.buildFast += (upper67 - this.buildFast) * (1 - Math.exp(-dtReal / 1.2));
+    this.buildSlow += (upper67 - this.buildSlow) * (1 - Math.exp(-dtReal / 14));
+    const pressure = clamp((this.buildFast - this.buildSlow) * 3, -1, 1);
+    this.buildLevel += (0.35 - this.buildLevel) * (1 - Math.exp(-dtReal / 45)); // always drifts back towards the middle
+    this.buildLevel = clamp(this.buildLevel + pressure * dtReal * 0.08, 0.05, 1);
+    this.arrangementInfo = `build ${Math.round(this.buildLevel * 100)}% ${pressure > 0.06 ? "rising" : pressure < -0.06 ? "falling" : "steady"} (L6+L7)`;
+    this.lv = { bass: p.bandBass, comp: p.bandKeys, lead: p.bandLead, ride: p.bandDrums, choir: p.bandChoir * brain * (0.25 + 0.9 * this.buildLevel) };
     this.feel = { variation: p.bandVariation, human: p.bandHuman, switchRate: p.bandSwitch };
     this.opts = { riffs: p.bandRiffs, groove: p.bandGroove, learn: p.bandLearn, evolve: p.bandEvolve, style: p.bandStyle };
     this.fluent = this.brain.fluency(this.style);
@@ -1203,8 +1222,9 @@ export class Band {
     const bar = s >> 3;
     const beatDur = 60 / this.bpm;
     const hum = this.feel.human * 2; // 1 = as designed, 0 = machine-exact
-    const vel = (base: number, span: number): number => Math.round(clamp(base + span * f.d + ((this.q(0) - 0.5) * 10 + Math.sin(s * 0.19) * 5) * hum, 1, 127));
-    const dens = p.bandDensity * 2;
+    const buildShift = (this.buildLevel - 0.35) * 20; // louder and busier at a high build, pulled back at a low one
+    const vel = (base: number, span: number): number => Math.round(clamp(base + span * f.d + buildShift + ((this.q(0) - 0.5) * 10 + Math.sin(s * 0.19) * 5) * hum, 1, 127));
+    const dens = p.bandDensity * 2 * (0.55 + 0.9 * this.buildLevel);
     // A young brain is looser in time than a practised one.
     const loose = (0.3 + p.dust * 3) * 0.012 * (1.7 - f.health) * hum * (1.6 - 0.9 * fl);
     const jit = (l: number): number => Math.max(this.ctx.currentTime, t + (this.q(l) - 0.5) * loose);
@@ -1217,7 +1237,7 @@ export class Band {
       [2 * k + 1, t + stepLen * 0.5],
     ];
     const at = (tt: number, l: number, span = 1): number => Math.max(this.ctx.currentTime, tt + (this.q(l) - 0.5) * loose * span);
-    if (k === 0 && bar % 4 === 3) this.fillRolled = this.q(9) < 0.25 + 0.5 * groove * fl + 0.2 * f.d;
+    if (k === 0 && bar % 4 === 3) this.fillRolled = this.q(9) < (0.25 + 0.5 * groove * fl + 0.2 * f.d) * (0.5 + 0.8 * this.buildLevel);
     const filling = this.fillRolled && f.d > 0.05 && st.drums !== "bossa" && st.drums !== "none" && bar % 4 === 3 && k >= 6;
 
     // Walking bass: one note per beat, always from the bottom layer's activity. A practised brain approaches the next
