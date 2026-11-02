@@ -292,6 +292,7 @@ export function buildControls(root: HTMLElement, params: Params, onDimension: (d
         input.addEventListener("input", () => {
           params[spec.key] = Number(input.value);
           val.textContent = Number(input.value).toFixed(spec.step < 0.01 ? 3 : 2);
+          document.dispatchEvent(new CustomEvent("slider-input", { detail: spec.key }));
         });
         syncs.push(sync);
         sync();

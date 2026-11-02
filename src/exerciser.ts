@@ -15,6 +15,7 @@ interface Setting {
   explore: number;
   radius: number;
   moves: number;
+  forget: number; // seconds until half of your own slider move is forgotten again
 }
 
 // Optional "what is off?" hints. Each one nudges the sliders it names on the next proposal (or right away when idle).
@@ -36,7 +37,11 @@ export class Exerciser {
   readonly specs: readonly SliderSpec[] = SLIDERS.filter((s) => !NOT_EXERCISED.includes(s.key));
   private readonly model = new TasteModel(this.specs.length);
   private readonly locked: boolean[] = this.specs.map(() => false);
-  private readonly setting: Setting = { glide: 4, listen: 6, explore: 0.4, radius: 0.4, moves: 3 };
+  // Your own slider moves: obeyed at once (grip 1), then slowly forgotten so the exerciser can be creative again.
+  private readonly grip = new Float64Array(this.specs.length);
+  private readonly held = new Float64Array(this.specs.length);
+  private machine = new Float64Array(this.specs.length);
+  private readonly setting: Setting = { glide: 4, listen: 6, explore: 0.4, radius: 0.4, moves: 3, forget: 40 };
   private mode: Mode = "off";
   private auto = false;
   private t = 0;
@@ -127,6 +132,7 @@ export class Exerciser {
     };
     num("Glide time (s)", "glide", 0.5, 12, 0.5, "How long the sliders take to travel to the proposed setting. Slow glides sound like the tank morphing.");
     num("Listen time (s)", "listen", 1, 30, 1, "How long you get to experience the new setting before the question pops up.");
+    num("Respect my moves (s)", "forget", 5, 180, 5, "When you move a slider while the exerciser runs, it obeys you at once and keeps that slider where you put it. Your move fades with this half-life, so the exerciser slowly gets its freedom back and creativity is never locked out. Your own settings are also what gets rated, so they teach the model too.");
     num("Exploration", "explore", 0, 1, 0.05, "0 = always propose what the model already expects you to like. 1 = favour settings the model is unsure about, to learn faster where your taste lies.");
     num("Step size", "radius", 0, 1, 0.05, "How far a proposal strays from the current setting. Small = fine tuning, large = big jumps.");
     num("Sliders per move", "moves", 1, 8, 1, "How many sliders a typical proposal changes at once. Few changes make it easier for the model to tell what you reacted to.");
@@ -155,6 +161,7 @@ export class Exerciser {
     prof.append(this.canvas, legend);
     root.append(bar, chipBar, grid, this.status, prof);
 
+    document.addEventListener("slider-input", (e) => this.userMoved(String((e as CustomEvent).detail)));
     document.addEventListener("keydown", (e) => {
       if (this.mode !== "ask" || e.ctrlKey || e.metaKey || e.altKey) return;
       const k = e.key.toLowerCase();
@@ -225,10 +232,27 @@ export class Exerciser {
     return Float64Array.from(this.specs, (s) => (Number(this.params[s.key]) - s.min) / (s.max - s.min));
   }
 
+  /** The human touched a slider: take over that slider now; the grip fades with time. */
+  private userMoved(key: string): void {
+    const i = this.specs.findIndex((s) => s.key === key);
+    const s = this.specs[i];
+    if (!s || this.mode === "off") return;
+    this.held[i] = (Number(this.params[s.key]) - s.min) / (s.max - s.min);
+    this.grip[i] = 1;
+    if (this.mode === "listen") this.t = 0; // keep listening while the human is still tuning
+  }
+
+  private gripped(): boolean {
+    return this.grip.some((g) => g > 0.02);
+  }
+
   private apply(x: ArrayLike<number>): void {
+    this.machine = Float64Array.from(x);
     this.specs.forEach((s, i) => {
       if (this.locked[i]) return;
-      const v = s.min + Math.min(1, Math.max(0, x[i] ?? 0)) * (s.max - s.min);
+      const g = this.grip[i] ?? 0;
+      const m = (x[i] ?? 0) * (1 - g) + (this.held[i] ?? 0) * g;
+      const v = s.min + Math.min(1, Math.max(0, m)) * (s.max - s.min);
       this.params[s.key] = Math.round(v / s.step) * s.step;
     });
     this.syncAll();
@@ -257,6 +281,7 @@ export class Exerciser {
   stop(): void {
     this.auto = false;
     this.mode = "off";
+    this.grip.fill(0);
     this.closeDialog();
     this.startBtn.textContent = "Start auto-exercise";
     this.startBtn.classList.remove("on");
@@ -280,13 +305,19 @@ export class Exerciser {
     const cur = this.vector();
     const explore = this.bored ? Math.min(1, this.setting.explore + 0.4) : this.setting.explore;
     const s = this.model.suggest(cur, { ...this.setting, explore, locked: this.locked });
-    this.glideTo(cur, this.biased(s.x));
+    const to = this.biased(s.x);
+    this.grip.forEach((g, i) => {
+      to[i] = (to[i] ?? 0) * (1 - g) + (this.held[i] ?? 0) * g;
+      this.grip[i] = g * 0.75;
+    });
+    this.glideTo(cur, to);
     this.bored = false;
   }
 
   private glideTo(from: Float64Array, to: Float64Array): void {
     this.from = from;
     this.target = to;
+    this.machine = Float64Array.from(to);
     const diffs = this.specs
       .map((s, i) => ({ s, d: (to[i] ?? 0) - (from[i] ?? 0) }))
       .filter((x) => Math.abs(x.d) > 0.02)
@@ -311,6 +342,12 @@ export class Exerciser {
 
   /** Advance the exerciser by dt seconds. Called every animation frame. */
   update(dt: number): void {
+    if (this.mode === "off") this.grip.fill(0);
+    else if (this.gripped()) {
+      const keep = Math.pow(0.5, dt / Math.max(1, this.setting.forget));
+      this.grip.forEach((g, i) => (this.grip[i] = g * keep < 0.02 ? 0 : g * keep));
+      if (this.mode !== "glide") this.apply(this.machine);
+    }
     if (this.mode === "glide") {
       this.t += dt;
       const k = smooth(Math.min(1, this.t / Math.max(0.1, this.setting.glide)));
@@ -422,9 +459,11 @@ export class Exerciser {
     if (this.mode === "glide") state = `gliding ${(Math.min(1, this.t / this.setting.glide) * 100).toFixed(0)}%`;
     else if (this.mode === "listen") state = `listen... ${Math.max(0, this.setting.listen - this.t).toFixed(0)}s to the question`;
     else if (this.mode === "ask") state = "waiting for your answer";
+    const steer = this.grip.filter((g) => g > 0.02).length;
+    if (steer) state += ` · you steer ${steer} slider${steer > 1 ? "s" : ""} (fading)`;
     this.status.textContent = `Ratings ${n} (Boring ${boring} · Yes ${yes}${heaven ? ` of which ${heaven} Heavenly` : ""} · Maybe ${n - yes - no - boring} · No ${no}${hell ? ` of which ${hell} Hellish` : ""}) · ${state}${guess}`;
     if (this.mode === "ask") this.refreshDialogText();
-    if (force || this.mode === "glide" || this.mode === "listen") this.draw();
+    if (force || this.mode === "glide" || this.mode === "listen" || this.gripped()) this.draw();
   }
 
   /** Taste profile: per slider, where Yes and No ratings live, plus the current value. */
@@ -443,8 +482,9 @@ export class Exerciser {
     this.specs.forEach((s, i) => {
       const y = 12 + i * 9;
       const lock = this.locked[i] === true;
-      c.fillStyle = lock ? "#5a6577" : "#93a0b3";
-      c.fillText(`${lock ? "🔒 " : ""}${s.label}`, 4, y + 6);
+      const g = this.grip[i] ?? 0;
+      c.fillStyle = lock ? "#5a6577" : g > 0.02 ? "#ffb347" : "#93a0b3";
+      c.fillText(`${lock ? "🔒 " : ""}${s.label}${g > 0.02 ? ` (you ${(g * 100).toFixed(0)}%)` : ""}`, 4, y + 6);
       const a = Math.min(1, 0.25 + 0.45 * (rel[i] ?? 1));
       c.fillStyle = `rgba(80,100,140,${lock ? 0.15 : a})`;
       c.fillRect(x0, y + 1, bw, 6);
