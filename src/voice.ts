@@ -15,6 +15,7 @@ export interface VoiceFrame {
   clarity: number; // 0..1, how periodic the sound is
   state: "idle" | "attack" | "voiced" | "noise";
   midiNote: number; // the segmented note being held, -1 when none
+  gate: number; // rms the input must exceed to count as sound
 }
 
 const FMIN = 70;
@@ -25,11 +26,11 @@ const REFRACTORY = 0.07;
 const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
 
 export class VoiceAnalyzer {
-  /** Multiplies the noise gate: 1 is normal, higher listens through more noise. */
-  gateScale = 1;
-  frame: VoiceFrame = { level: 0, db: -90, hz: 0, midi: 0, clarity: 0, state: "idle", midiNote: -1 };
+  /** Divides the noise gate: 1 is normal, higher hears quieter sound (and more noise). */
+  sensitivity = 2;
+  frame: VoiceFrame = { level: 0, db: -90, hz: 0, midi: 0, clarity: 0, state: "idle", midiNote: -1, gate: 0.01 };
 
-  private floor = 0.004;
+  private floor = 0.002;
   private slow = 0;
   private lastOnset = -10;
   private state: VoiceFrame["state"] = "idle";
@@ -41,11 +42,12 @@ export class VoiceAnalyzer {
   private noteStart = 0;
   private drift = 0;
   private unvoiced = 0;
+  private legato = 0;
 
   constructor(private readonly sampleRate: number) {}
 
   private gate(): number {
-    return Math.max(0.01, this.floor * 3) * this.gateScale;
+    return Math.max(0.0012, (this.floor * 3) / this.sensitivity);
   }
 
   /** Velocity 1..127 from the rms level. */
@@ -84,7 +86,7 @@ export class VoiceAnalyzer {
     }
     let best = -1;
     for (let tau = tauMin; tau < tauMax; tau++) {
-      if ((n[tau] ?? 1) < 0.2) {
+      if ((n[tau] ?? 1) < 0.27) {
         while (tau + 1 < tauMax && (n[tau + 1] ?? 1) < (n[tau] ?? 1)) tau++;
         best = tau;
         break;
@@ -119,11 +121,13 @@ export class VoiceAnalyzer {
     const gate = this.gate();
     const loud = level > gate;
     const p = loud ? VoiceAnalyzer.pitch(buf, this.sampleRate) : { hz: 0, clarity: 0 };
-    const voiced = loud && p.hz > 0 && p.clarity >= 0.78;
+    const voiced = loud && p.hz > 0 && p.clarity >= 0.72;
     const midi = voiced ? 69 + 12 * Math.log2(p.hz / 440) : 0;
 
+    // the noise floor follows quiet sound fast and an endless unvoiced racket slowly, never a sung note
     if (this.state === "idle" && !loud) this.floor += 0.02 * (level - this.floor);
-    const onset = loud && level > this.slow * 1.7 + 0.004 && now - this.lastOnset > REFRACTORY;
+    else if (this.state === "noise" || (this.state === "idle" && !voiced)) this.floor += 0.003 * (level - this.floor);
+    const onset = loud && level > this.slow * 1.7 + gate * 0.4 && now - this.lastOnset > REFRACTORY;
     this.slow += 0.15 * (level - this.slow);
 
     const endNote = (): void => {
@@ -133,6 +137,7 @@ export class VoiceAnalyzer {
       this.note = -1;
     };
     const startNote = (m: number): void => {
+      this.legato = 0;
       this.note = Math.round(m);
       this.noteStart = now;
       this.drift = 0;
@@ -150,6 +155,15 @@ export class VoiceAnalyzer {
     switch (this.state) {
       case "idle":
         if (onset) beginAttack();
+        else if (voiced) {
+          // a steady hummed note without a new attack (legato) still counts once it has lasted a moment
+          this.legato++;
+          this.lastMidi = midi;
+          if (this.legato >= 8) {
+            this.peak = level;
+            startNote(midi);
+          }
+        } else this.legato = 0;
         break;
       case "attack": {
         this.peak = Math.max(this.peak, level);
@@ -196,7 +210,7 @@ export class VoiceAnalyzer {
         if (level < gate * 0.7) this.state = "idle";
         break;
     }
-    this.frame = { level, db: 20 * Math.log10(Math.max(level, 1e-5)), hz: voiced ? p.hz : 0, midi, clarity: p.clarity, state: this.state, midiNote: this.note };
+    this.frame = { level, db: 20 * Math.log10(Math.max(level, 1e-5)), hz: voiced ? p.hz : 0, midi, clarity: p.clarity, state: this.state, midiNote: this.note, gate };
     return out;
   }
 }
@@ -224,6 +238,7 @@ export class VoiceInput {
   onEvent: (e: VoiceEvent) => void = () => undefined;
   onFrame: (f: VoiceFrame) => void = () => undefined;
   analyzer: VoiceAnalyzer | null = null;
+  sensitivity = 2;
   private ctx: AudioContext | null = null;
   private stream: MediaStream | null = null;
   private timer = 0;
@@ -242,7 +257,9 @@ export class VoiceInput {
     an.smoothingTimeConstant = 0;
     ctx.createMediaStreamSource(stream).connect(an);
     const az = new VoiceAnalyzer(ctx.sampleRate);
+    az.sensitivity = this.sensitivity;
     this.analyzer = az;
+    void ctx.resume();
     this.stream = stream;
     this.ctx = ctx;
     const buf = new Float32Array(an.fftSize);

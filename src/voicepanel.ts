@@ -88,13 +88,14 @@ export function buildVoicePanel(root: HTMLElement, deps: VoiceDeps): VoicePanel 
   mic.type = "button";
   const monitor = check("hear my voice as instruments", true);
   const follow = check("machine follows my tempo (off: you follow the machine)", false);
-  const sensLabel = el("label", "voice-opt", "noise gate ");
+  const sensLabel = el("label", "voice-opt", "mic sensitivity ");
   const sens = el("input");
   sens.type = "range";
   sens.min = "0.5";
-  sens.max = "4";
+  sens.max = "8";
   sens.step = "0.1";
-  sens.value = "1";
+  sens.value = "2";
+  sens.title = "How quiet a sound may be and still count. Raise it when the level bar moves but nothing is detected; lower it when a noisy room triggers notes.";
   sensLabel.append(sens);
   const tuneLabel = el("label", "voice-opt", "tune-in ");
   const tune = el("input");
@@ -117,6 +118,7 @@ export function buildVoicePanel(root: HTMLElement, deps: VoiceDeps): VoicePanel 
   root.append(row, read, tuneRead, cue, timing, lattice, meta, cube, cubeMeta);
 
   let last = "";
+  let lastTuned = 0;
   const onEvent = (e: VoiceEvent): void => {
     if (e.kind === "off") {
       if (e.staccato) counts.staccato++;
@@ -124,6 +126,7 @@ export function buildVoicePanel(root: HTMLElement, deps: VoiceDeps): VoicePanel 
     }
     if (e.kind === "on") {
       counts.notes++;
+      lastTuned = performance.now();
       const t = tuneNote(e.midi, deps.chord(), deps.tuneLevel(), deps.colour());
       deps.strike(clamp01(0.1 + (0.8 * (t.midi - 36)) / 48), 0.1 + 0.8 * (((t.midi % 12) + 12) % 12) / 12, 0.5 + (0.9 * e.vel) / 127);
       deps.note(t.midi, e.vel, monitor.box.checked);
@@ -146,6 +149,11 @@ export function buildVoicePanel(root: HTMLElement, deps: VoiceDeps): VoicePanel 
     }
   };
 
+  const diagnose = (f: VoiceFrame): string => {
+    if (f.level <= f.gate) return f.level > f.gate * 0.3 ? `too quiet (${f.db.toFixed(0)} dB, needs ${(20 * Math.log10(f.gate)).toFixed(0)} dB): sing closer or raise mic sensitivity` : "quiet";
+    return `sound but no clear pitch (${(f.clarity * 100).toFixed(0)}%): hold one note, "aah" or "mmm"`;
+  };
+
   const onFrame = (f: VoiceFrame): void => {
     const now = performance.now();
     if (f.state === "voiced" && f.midiNote >= 0 && now - lastHold > 140) {
@@ -155,11 +163,13 @@ export function buildVoicePanel(root: HTMLElement, deps: VoiceDeps): VoicePanel 
     }
     const goal = f.hz > 0 && f.midiNote >= 0 ? tuneNote(f.midiNote, deps.chord(), deps.tuneLevel(), deps.colour()).midi : null;
     const cents = f.hz > 0 ? Math.round((f.midi - Math.round(f.midi)) * 100) : 0;
+    if (f.state !== "voiced" && now - lastTuned > 2500) tuneRead.textContent = `Auto-tuner on ${deps.chord().name}: waiting for a sung note. ${f.level > f.gate ? "I hear sound but it is not a steady pitch yet." : "I hear nothing above the gate yet."}`;
     const bar = "█".repeat(Math.round(clamp01((f.db + 60) / 60) * 12)).padEnd(12, "░");
-    read.textContent = `${bar} ${f.state === "voiced" ? `${noteName(f.midiNote)}${goal !== null && goal !== f.midiNote ? `→${noteName(goal)}` : ""} ${f.hz.toFixed(0)} Hz ${cents >= 0 ? "+" : ""}${cents} cents` : f.state === "noise" ? "burst" : f.level > 0.01 ? "listening" : "quiet"} · last: ${last || "-"}`;
+    read.textContent = `${bar} ${f.state === "voiced" ? `${noteName(f.midiNote)}${goal !== null && goal !== f.midiNote ? `→${noteName(goal)}` : ""} ${f.hz.toFixed(0)} Hz ${cents >= 0 ? "+" : ""}${cents} cents` : f.state === "noise" ? "burst" : diagnose(f)} · last: ${last || "-"}`;
   };
 
   mic.addEventListener("click", () => {
+    voice.sensitivity = Number(sens.value);
     if (voice.running) {
       voice.stop();
       mic.textContent = "Mic: Start";
@@ -183,7 +193,8 @@ export function buildVoicePanel(root: HTMLElement, deps: VoiceDeps): VoicePanel 
   });
   tune.addEventListener("input", () => deps.setTuneLevel(Number(tune.value)));
   sens.addEventListener("input", () => {
-    if (voice.analyzer) voice.analyzer.gateScale = Number(sens.value);
+    voice.sensitivity = Number(sens.value);
+    if (voice.analyzer) voice.analyzer.sensitivity = voice.sensitivity;
   });
 
   const drawCue = (): void => {
