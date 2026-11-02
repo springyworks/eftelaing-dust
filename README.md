@@ -24,3 +24,7 @@ Live: https://springyworks.github.io/eftelaing-dust/ (built with `npm run build`
 - **Maslow x OSI+ matrix** (maxGraph): Maslow levels are rows, OSI+ layers are columns. Views: activity (OSI+ to Maslow), unmet need (Maslow to OSI+) and the editable mapping weights. Click a cell to cycle its weight (0, 0.5, 1), a column header to strike a layer, a row header to strike every layer mapped to that level. The "Maslow to OSI+ drive" slider lets unmet needs excite quiet layers (reverse mapping).
 - **Wave-tank monitor** (replaces the earlier decorative instrument): every layer is an FM voice driven by measurements of its tank. Pitch = measured frequency, level = rms, FM index = peakiness (crest factor) and phase-lock with neighbours, plus spike detection (sudden velocity jumps) with LEDs, counters, a bright FM pluck and a live spectrum. Pitch is a fixed time-scaling (1600 Hz per rad/step), so it shows relative, not physical, frequencies.
 - Artistic simulation, not a validated neuroscience model.
+
+## Genre: dust-programming (crap-art)
+
+A proposed software-development category: start from a serious play-tool and "clay ourselves into the future". Keywords so far: **dust-programming**, **crap-art**, **playtool**, **pseudo-science**, **art for everyone**, **serious self-insight**. It is openly pseudo-science: the models are metaphors you can poke, hear and rewire (matrix mapping, FM audification), not validated theory. Add more keywords here.
