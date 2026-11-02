@@ -13,6 +13,7 @@ export interface Chord {
   readonly bass: readonly number[]; // chord tones above the root, in semitones
   readonly voicing: readonly number[]; // rootless comping voicing, MIDI notes
   readonly scale: readonly number[]; // pitch classes of the improvisation scale
+  readonly quality?: QualityKey; // set for chords built from the library, used by the harmonic planner
 }
 
 interface Quality {
@@ -33,7 +34,7 @@ const QUALITIES = {
   maj9: { suffix: "maj9", bass: [0, 4, 7, 11], voicing: [4, 7, 11, 14], scale: [0, 2, 4, 5, 7, 9, 11] },
   maj11: { suffix: "maj7#11", bass: [0, 4, 7, 11], voicing: [4, 11, 14, 18], scale: [0, 2, 4, 6, 7, 9, 11] },
 } as const satisfies Record<string, Quality>;
-type QualityKey = keyof typeof QUALITIES;
+export type QualityKey = keyof typeof QUALITIES;
 
 const NOTE = ["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
 
@@ -44,7 +45,12 @@ function build(rootPc: number, q: QualityKey): Chord {
   let notes = spec.voicing.map((i) => base + i);
   while ((notes[0] ?? 60) < 58) notes = notes.map((n) => n + 12);
   while ((notes[notes.length - 1] ?? 70) > 82) notes = notes.map((n) => n - 12);
-  return { name: `${NOTE[rootPc % 12]}${spec.suffix}`, root, bass: spec.bass, voicing: notes, scale: spec.scale.map((i) => (rootPc + i) % 12) };
+  return { name: `${NOTE[rootPc % 12]}${spec.suffix}`, root, bass: spec.bass, voicing: notes, scale: spec.scale.map((i) => (rootPc + i) % 12), quality: q };
+}
+
+/** A library chord on any root pitch class, for substitutions and approach chords. */
+export function chordFrom(rootPc: number, q: QualityKey): Chord {
+  return build(((rootPc % 12) + 12) % 12, q);
 }
 
 // Four chords of two bars each (an eight-bar loop). [root pitch class, quality when resolved, quality when tense].
@@ -134,7 +140,24 @@ export function progressionCount(style: StyleId): number {
 /** Funk / fusion bass: 1 root, o octave, 5 fifth, 7 flat seven, g ghost (dead) root. */
 export const FUNK_BASS: readonly string[] = ["1..g..1.o..g1.5.", "1.g.1..o..1.g.7.", "1..1..g.5..o.g7.", "1.o.g.1.5.g.o.7.", "1.......g.1...5.", "1..g.1.g1..5.g7o"];
 /** Chicken-scratch comping: x stab, m muted short stab. */
-export const CHICKEN: readonly string[] = ["x.mxm.x.m.xm.xm.", "m.xm.mx.m.xm.x.m", "x..x..x.m.x..mx.", "..x..x.m..x.mx.m"];
+export const CHICKEN: readonly string[] = [
+  "x.mxm.x.m.xm.xm.", "m.xm.mx.m.xm.x.m", "x..x..x.m.x..mx.", "..x..x.m..x.mx.m",
+  "x.m.m.xmx.m.m.x.", "mx.m.x.mm.xm.x.x", "x..m.x.mx..m.x.m", "m.x.x.m.xm.x.mx.",
+];
+/** Swing / bebop comping over two bars of eighth-note slots (16 slots): x stab, X longer accent. Charleston is the first. */
+export const SWING_COMP: readonly string[] = [
+  "x..x....x..x....", "..x..x....x..x..", "x.....x.x.....x.", ".x..x..x.x..x..x",
+  "x...x...x...x...", "X..x...x..X.x...", "..x.x.x...x.x.x.", "x..x..x.x..x..x.",
+];
+/**
+ * Strummed guitar over one bar of sixteenths: D down-strum of the whole chord, u up-strum of the top strings,
+ * x hard accent, m muted chop, . rest.
+ */
+export const STRUMS: readonly string[] = [
+  "D..u.uD.D.uu.uD.", "D...D...D...D..u", "D.mu.umuD.mu.umu", "..x...x...x...x.",
+  "x..m.mx..m.mx.m.", "D..D..D.D..D..D.", "D.u.m.uD..uD.m.u", "..D.u..D..D.u.D.",
+  "D.......D..u....", "mDmDmDmDmDmDmDmD",
+];
 /** Kick patterns (k) and the places a ghost snare may sit. */
 export const KICKS: readonly string[] = ["k..k..k...k..k..", "k.....k.k..k....", "k..k.k....k..k.k"];
 export const GHOST_SLOTS: readonly number[] = [2, 7, 9, 14, 15];

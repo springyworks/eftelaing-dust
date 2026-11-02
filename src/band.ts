@@ -25,7 +25,8 @@
 
 import { NUM_LAYERS, NUM_LEVELS, clamp, type BandStyle, type Params } from "./model";
 import type { Simulation } from "./sim";
-import { BOSSA_CLAVE, BOSSA_KICK, CHICKEN, FUNK_BASS, GHOST_SLOTS, KICKS, Personality, STYLES, STYLE_IDS, progressionCount, progressionOf, type Chord, type StyleId } from "./style";
+import { BOSSA_CLAVE, BOSSA_KICK, CHICKEN, FUNK_BASS, GHOST_SLOTS, KICKS, Personality, STRUMS, STYLES, STYLE_IDS, SWING_COMP, progressionCount, progressionOf, type Chord, type StyleId } from "./style";
+import { GUITAR_VOICING, VOICING_NAMES, harmonicHeat, planChord, voiceLead } from "./harmony";
 
 export interface Spat {
   readonly input: AudioNode;
@@ -72,7 +73,9 @@ const KEYS_PATCHES: readonly Patch[] = [
   { name: "organ", gm: 16 },
   { name: "harp", gm: 46 },
   { name: "warm pad", gm: 89 },
+  { name: "strum guitar", gm: 25 },
 ];
+const GUITAR_PATCH = 5;
 const LEAD_PATCHES: readonly Patch[] = [
   { name: "saw lead", gm: 81 },
   { name: "flute", gm: 73 },
@@ -152,6 +155,7 @@ export class Band {
   private next = 0;
   private readonly beats: { t: number; n: number }[] = [];
   private lastBass = 38;
+  private bassPush: number | null = null;
   private fillRolled = false;
   private leadMidi = 69;
   private tension = 0.5;
@@ -198,6 +202,18 @@ export class Band {
   private l6prev = 0;
   private bassPat = 0;
   private compPat = 0;
+  private swcPat = 0;
+  private strumPat = 0;
+  // Chord voicings: the one in use (voice-led from the last), the guitar shape, the approach chord of the last two beats.
+  private vox: number[] = [];
+  private strumVox: number[] = [];
+  private apprVox: number[] = [];
+  private apprStrum: number[] = [];
+  private approach: Chord | null = null;
+  private lastVariant = -1;
+  private heat = 0;
+  harmonyInfo = "";
+  harmonyNow = "";
   private kickPat = 0;
   // Smoothed loudness of every voice, so the exerciser can tell which one dominates the mix.
   private readonly loud: Record<VoiceKey | "choir", number> = { bass: 0, comp: 0, lead: 0, ride: 0, choir: 0 };
@@ -592,6 +608,8 @@ export class Band {
     if (bar % 2 === 0) {
       this.bassPat = this.brain.pick("bass:", FUNK_BASS.length, this.q(3));
       this.compPat = this.brain.pick("comp:", CHICKEN.length, this.q(4));
+      this.swcPat = this.brain.pick("swc:", SWING_COMP.length, this.q(4));
+      this.strumPat = this.brain.pick("strum:", STRUMS.length, this.q(4));
       this.kickPat = this.brain.pick("kick:", KICKS.length, this.q(5));
     }
     this.prevPhrase = this.phrase;
@@ -681,7 +699,9 @@ export class Band {
     const st = STYLES[this.style];
     const keys = [`prog:${this.style}:${this.prog}`];
     if (st.bass === "funk") keys.push(`bass:${this.bassPat}`);
-    if (st.comp === "chicken") keys.push(`comp:${this.compPat}`);
+    if (this.patch.comp === GUITAR_PATCH) keys.push(`strum:${this.strumPat}`);
+    else if (st.comp === "chicken") keys.push(`comp:${this.compPat}`);
+    else if (st.comp === "charleston") keys.push(`swc:${this.swcPat}`);
     if (st.drums !== "swing" && st.drums !== "bossa" && st.drums !== "none") keys.push(`kick:${this.kickPat}`);
     if (this.curRun && this.phrase.length > 0) keys.push(`run:${this.curRun}`);
     if (this.riff && this.phrase.length > 0 && !this.curRun && (st.lead === "funk" || st.lead === "fusion")) keys.push(`riff:${this.riff.rhythm}`);
@@ -1089,6 +1109,19 @@ export class Band {
     if (active && this.step % 4 === 0) this.describePatches();
   }
 
+  /** Picks a new way to voice the current chord (never the same twice in a row) and voice-leads it from the last one. */
+  private revoice(tag: string | null): void {
+    let v = Math.min(3, Math.floor((0.6 * this.heat + 0.4 * this.q(5)) * 4));
+    if (v === this.lastVariant) v = (v + 1) % 4;
+    this.lastVariant = v;
+    this.vox = voiceLead(this.cur, this.vox, v);
+    this.strumVox = voiceLead(this.cur, [], GUITAR_VOICING);
+    this.apprVox = this.approach ? voiceLead(this.approach, this.vox, 1) : [];
+    this.apprStrum = this.approach ? voiceLead(this.approach, [], GUITAR_VOICING) : [];
+    if (tag !== null) this.harmonyInfo = tag;
+    this.harmonyNow = `${this.cur.name} · ${VOICING_NAMES[v]} voicing · heat ${Math.round(this.heat * 100)}%${this.harmonyInfo ? ` · ${this.harmonyInfo}` : ""}`;
+  }
+
   private play(t: number, stepLen: number, p: Params, f: Features, silent: boolean): void {
     this.tickHandover();
     const s = this.step;
@@ -1099,10 +1132,18 @@ export class Band {
     if (s % 8 === 0) this.chooseStyle(s >> 3, f);
     if (inChord === 0 || s === 0) {
       this.chordIndex = Math.floor(s / 16) % 4;
-      this.cur = progressionOf(this.style, this.prog, f.tension)[this.chordIndex] ?? this.cur;
+      const chords = progressionOf(this.style, this.prog, f.tension);
+      const base = chords[this.chordIndex] ?? this.cur;
+      // The harmonic plan: layer 6 (and the slow arc of the form) decides how adventurous the chords are.
+      this.heat = harmonicHeat(s >> 3, f.rms[5] ?? 0, f.tension, f.brain);
+      const plan = planChord(base, chords[(this.chordIndex + 1) % 4] ?? base, this.heat, [this.q(5), this.q(6), this.q(7)]);
+      this.cur = plan.chord;
+      this.approach = plan.approach;
       this.chordName = this.cur.name;
+      this.revoice(plan.tag);
       this.snapTones = [...new Set([...this.cur.bass, 2].map((i) => (((this.cur.root + i - 2) % 12) + 12) % 12))];
     }
+    if (inChord === 8 && !silent) this.revoice(null);
     const accents = this.accents;
     this.accents = [];
     const typed = this.typed.shift();
@@ -1144,7 +1185,7 @@ export class Band {
         else this.leadNote(t, n - 12, 56, stepLen * 2.5);
         this.echoInfo = `brain answers ${e.midi !== undefined ? "your voice " : ""}with L${l + 1} (note ${n})`;
       } else {
-        this.comp(t, cur.voicing.slice(-3), 62, stepLen * 2, 3);
+        this.comp(t, (this.vox.length > 0 ? this.vox : cur.voicing).slice(-3), 62, stepLen * 2, 3);
       }
       return false;
     });
@@ -1186,10 +1227,24 @@ export class Band {
       else n = cur.root + (cur.bass[(Math.floor(f.cx * 7) + beat) % cur.bass.length] ?? 0);
       while (n > 55) n -= 12;
       while (n < 28) n += 12;
+      // A note that was pushed ahead onto the "and" before is tied: it replaces this one instead of sounding again.
+      const pushed = this.bassPush;
+      this.bassPush = null;
+      if (pushed !== null) n = pushed;
       this.lastBass = n;
-      this.bassNote(tight(0), n, vel(62, 40), beatDur * 0.92);
+      if (pushed === null) this.bassNote(tight(0), n, vel(62, 40), beatDur * 0.92);
     }
-    if (st.bass === "walk" && off && (q === 1 || q === 3) && f.d > 0.02 && this.q(2) < groove * fl * 0.35) this.bassNote(tight(0), this.lastBass, vel(38, 20), beatDur * 0.25);
+    if (st.bass === "walk" && off && f.d > 0.02) {
+      // Syncopation: the next beat's note is played early, on the "and", and the beat itself stays empty.
+      const syn = (0.1 + 0.4 * groove * fl) * (0.6 + 0.8 * this.feel.variation);
+      if (this.q(2) < syn * 0.6) {
+        let n = beat === 7 ? nextChord.root : cur.root + (cur.bass[(Math.floor(f.cx * 7) + beat + 1) % cur.bass.length] ?? 0);
+        while (n > 55) n -= 12;
+        while (n < 28) n += 12;
+        this.bassPush = n;
+        this.bassNote(tight(0), n, vel(68, 40), beatDur * 1.1);
+      } else if ((q === 1 || q === 3) && this.q(2) < groove * fl * 0.35) this.bassNote(tight(0), this.lastBass, vel(38, 20), beatDur * 0.25);
+    }
 
     // Funk and fusion bass: a 16th-note pattern on the one, with octave pops, fifths, flat sevens and ghost notes.
     if (st.bass === "funk" && f.d > 0.02) {
@@ -1275,31 +1330,56 @@ export class Band {
       }
     }
 
-    // Comping: charleston "1" and "and of 2" (swing, bebop), chicken-scratch 16ths (funk, fusion) or the bossa clave.
+    // Comping. The chord is the voice-led one of the harmonic plan (cv); the last two beats of a chord may belong to an
+    // approach chord. Rhythms: a swing pattern (charleston and others), chicken-scratch 16ths, the bossa clave, or, when the
+    // keys are the guitar, a strum pattern with down-strums, up-strums and muted chops. Layer 5 picks the pattern.
     const lk = this.sim?.lock;
     const sync = lk ? (lk[k] ?? 0) - lk.reduce((x, y) => x + y, 0) / lk.length : 0;
-    if (st.comp === "charleston") {
+    const useAppr = this.approach !== null && inChord >= 12 && this.apprVox.length > 0;
+    const cv: readonly number[] = useAppr ? this.apprVox : this.vox.length > 0 ? this.vox : cur.voicing;
+    const shape = useAppr ? this.apprStrum : this.strumVox;
+    const cvel = (base: number, span: number): number => vel(base + (this.heat - 0.4) * 14, span);
+    const guitar = this.patch.comp === GUITAR_PATCH && shape.length > 0;
+    const bpat = STRUMS[(this.strumPat + (bar % 4 === 3 ? 3 : 0)) % STRUMS.length] ?? "";
+    if (guitar && f.d > 0.05) {
+      for (const [i, tt] of subs) {
+        const ch = bpat[i];
+        const alive = this.q(3) < 0.55 + 0.45 * Math.min(1, dens);
+        if (ch === "D") this.comp(at(tt, 3, 0.4), shape, cvel(50, 30), beatDur * 0.5, shape.length, 0.011);
+        else if (ch === "x") this.comp(at(tt, 3, 0.4), shape, cvel(60, 30), beatDur * 0.22, shape.length, 0.007);
+        else if (ch === "u" && alive) this.comp(at(tt, 3, 0.4), shape.slice(-4).reverse(), cvel(32, 18), beatDur * 0.2, 4, 0.006);
+        else if (ch === "m" && alive && this.q(3) < 0.4 + 0.6 * groove) this.comp(at(tt, 3, 0.4), shape.slice(0, 3), cvel(22, 12), 0.04, 3, 0.004);
+      }
+    } else if (st.comp === "charleston") {
       const anticipate = k === 7 && bar % 2 === 1 && f.d > 0.05 && this.q(7) < groove * fl * 0.6; // the "and of four" pushes into the next chord
-      const compWanted = f.d > 0.05 && ((!off && q === 0 && this.q(3) < 0.5) || (off && q === 1) || (off && sync > 0 && this.q(3) < (0.25 + 0.7 * f.crest) * dens));
-      if (compWanted || anticipate) this.comp(jit(3), anticipate ? nextChord.voicing : cur.voicing, vel(40, 34), beatDur * 0.4, f.crest < 0.3 ? 3 : 4);
+      const hit = (SWING_COMP[this.swcPat] ?? "")[s % 16];
+      const patHit = (hit === "x" || hit === "X") && this.q(3) < 0.6 + 0.4 * Math.min(1, dens);
+      const compWanted = f.d > 0.05 && (patHit || (off && sync > 0 && this.q(3) < (0.15 + 0.5 * f.crest) * dens));
+      if (compWanted || anticipate) {
+        const notes = anticipate ? voiceLead(nextChord, cv, 1) : cv;
+        this.comp(jit(3), notes.slice(-(f.crest < 0.3 ? 3 : 4)), cvel(hit === "X" ? 48 : 40, 34), beatDur * (hit === "X" ? 0.75 : 0.4), 4);
+      }
     } else if (st.comp === "chicken" && f.d > 0.05) {
       const pat = CHICKEN[this.compPat] ?? "";
       for (const [i, tt] of subs) {
         const ch = pat[i];
-        if (ch === "x") this.comp(at(tt, 3, 0.4), cur.voicing, vel(46, 30), 0.14, 4);
-        else if (ch === "m" && this.q(3) < 0.4 + 0.6 * groove) this.comp(at(tt, 3, 0.4), cur.voicing.slice(-2), vel(24, 14), 0.04, 2);
+        if (ch === "x") this.comp(at(tt, 3, 0.4), cv, cvel(46, 30), 0.14, 4);
+        else if (ch === "m" && this.q(3) < 0.4 + 0.6 * groove) this.comp(at(tt, 3, 0.4), cv.slice(-2), cvel(24, 14), 0.04, 2);
       }
     } else if (st.comp === "bossa" && f.d > 0.05) {
-      for (const [i, tt] of subs) if (BOSSA_CLAVE[bar % 2]?.[i] === "x") this.comp(at(tt, 3, 0.4), cur.voicing, vel(38, 26), beatDur * 0.35, 4);
+      for (const [i, tt] of subs) if (BOSSA_CLAVE[bar % 2]?.[i] === "x") this.comp(at(tt, 3, 0.4), cv, cvel(38, 26), beatDur * 0.35, 4);
     }
+    // The approach chord announces itself with a push on its first beat.
+    if (useAppr && inChord === 12 && f.d > 0.05 && st.comp !== "none") this.comp(jit(3), guitar ? shape : cv, cvel(50, 30), beatDur * 0.8, guitar ? shape.length : 4, guitar ? 0.011 : 0.007);
     // Full ringing chords: like a pianist, land the whole chord (left-hand root plus the right-hand voicing, gently rolled
     // upwards) on every change, and again halfway through the chord. The stabs above only ever use two or three notes.
-    if (f.d > 0.02 && (inChord === 0 || (inChord === 8 && this.q(6) < 0.55 + 0.4 * groove))) {
-      const full = [cur.root + 12, ...cur.voicing];
-      this.comp(jit(3), full, vel(inChord === 0 ? 58 : 46, 30), beatDur * (inChord === 0 ? 3.2 : 2.2), full.length, 0.013);
+    const struck = guitar && (bpat[0] === "D" || bpat[0] === "x");
+    if (!struck && f.d > 0.02 && (inChord === 0 || (inChord === 8 && this.q(6) < 0.55 + 0.4 * groove))) {
+      const full = [cur.root + 12, ...cv];
+      this.comp(jit(3), full, cvel(inChord === 0 ? 58 : 46, 30), beatDur * (inChord === 0 ? 3.2 : 2.2), full.length, 0.013);
     }
     for (const a of accents) {
-      const top = cur.voicing.slice(-3).map((n) => n + (a.layer >= 7 ? 12 : 0));
+      const top = (this.vox.length > 0 ? this.vox : cur.voicing).slice(-3).map((n) => n + (a.layer >= 7 ? 12 : 0));
       this.comp(t, top, Math.round(clamp(52 + a.mag * 16, 1, 127)), beatDur * 0.3, 3);
       this.rideHit(t, Math.round(clamp(60 + a.mag * 12, 1, 127)), 0.8);
       if (a.layer === 0) this.bassNote(t, Math.max(28, cur.root - 12 + (cur.bass[2] ?? 0)), 96, beatDur * 0.5);
@@ -1517,6 +1597,10 @@ export class Band {
       const tt = t + i * strum;
       const f = mtof(midi);
       const x = vel / 127;
+      if (kind === GUITAR_PATCH) {
+        this.pluck(tt, f, x, w, dur, count);
+        return;
+      }
       const P = [
         { ratio: 1, i0: 1.2 + x * 1.6, i1: 0.25, itime: 0.5, atk: 0.004, sustain: false, end: 0.9, type: "sine", amp: 1 },
         { ratio: 4, i0: 0.8 + x * 0.6, i1: 0.02, itime: 0.4, atk: 0.003, sustain: false, end: 1.7, type: "sine", amp: 1.1 },
@@ -1560,6 +1644,38 @@ export class Band {
       car.stop(stop);
       mod.stop(stop);
     });
+  }
+
+  /** A plucked steel string: a bright saw that darkens quickly (filter envelope), a soft octave string and a pick click. */
+  private pluck(t: number, f: number, x: number, w: number, dur: number, count: number): void {
+    const ctx = this.ctx;
+    const body = ctx.createOscillator();
+    const shimmer = ctx.createOscillator();
+    const lp = ctx.createBiquadFilter();
+    const g = ctx.createGain();
+    const sg = ctx.createGain();
+    body.type = "sawtooth";
+    body.frequency.value = f;
+    shimmer.type = "triangle";
+    shimmer.frequency.value = f * 2.003;
+    sg.gain.value = 0.22;
+    lp.type = "lowpass";
+    lp.Q.value = 1.5;
+    lp.frequency.setValueAtTime(Math.min(9000, f * (5 + 9 * x)), t);
+    lp.frequency.exponentialRampToValueAtTime(Math.max(f * 1.6, 350), t + 0.3);
+    const a = (0.2 * (0.4 + x) * w) / Math.sqrt(count);
+    const ring = Math.min(2.4, 0.55 + dur * 1.4 + 90 / f);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(a, t + 0.003);
+    g.gain.exponentialRampToValueAtTime(0.0005, t + ring);
+    body.connect(lp);
+    shimmer.connect(sg).connect(lp);
+    lp.connect(g).connect(this.spat.comp.input);
+    body.start(t);
+    shimmer.start(t);
+    body.stop(t + ring + 0.05);
+    shimmer.stop(t + ring + 0.05);
+    this.noiseBurst(t, this.spat.comp.input, 2600, a * 0.45, 0.012, 3400);
   }
 
   private leadNote(t: number, midi: number, vel: number, dur: number): void {
