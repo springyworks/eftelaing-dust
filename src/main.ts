@@ -190,7 +190,7 @@ const helpBtn = button("Help", "", () => showHelp(helpBtn, "How to use", GENERAL
 const GENERAL_HELP =
   "Ten wave tanks stack from L1 (Physical) to L10 (Director). Each tank is coupled to its neighbours: bottom-up the instrument sounds into the player, top-down the director conducts. " +
   "Lower layers stabilise the layer above; a loud, unstable layer weakens everything over it. Maslow's levels are fed by pairs of layers and fill when those layers are healthy and stabilised. " +
-  "Fire a pulse with FIRE or by clicking the big tank, try a scenario, and play with the sliders. Every control has a ? button. Sound: the bottom layer conducts a jazz band (each instrument has its own place in the binaural scene); the raw FM sound of all layers is under General audio settings.";
+  "Fire a pulse with FIRE or by clicking the big tank, try a scenario, and play with the sliders. Every control has a ? button. Sound: the brain plays a jazz band, layer 1 as rhythm section, the others as a choir (every voice has its own HRTF place in the binaural scene); the raw FM sound of all layers is under General audio settings.";
 
 const mcBtn = button("Monte Carlo: Start", "mc", () => exerciser.toggle());
 const askBtn = button("Ask me now", "", () => exerciser.askNow());
