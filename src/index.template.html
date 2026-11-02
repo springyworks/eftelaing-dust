@@ -50,6 +50,7 @@
   .reward-note { font-size:12px; color:var(--dim); max-width:360px; line-height:1.25; }
   @keyframes dlg-pulse { 0%,100% { box-shadow:0 10px 40px #000c, 0 0 0 0 #ffb34788; } 50% { box-shadow:0 10px 40px #000c, 0 0 0 10px #ffb34700; } }
   .links { display:flex; gap:10px; align-items:center; font-size:12px; }
+  .links canvas { vertical-align:middle; cursor:pointer; margin-right:2px; }
   .links a { color:#6aa7ff; text-decoration:underline; cursor:pointer; }
   .links a:hover { color:#9cc4ff; }
   .notice { display:flex; gap:10px; align-items:flex-start; padding:6px 16px; font-size:12px; line-height:1.45; background:#162033; border-bottom:1px solid var(--line); }
@@ -157,7 +158,7 @@
 <header>
   <h1>Eftelaing-dust<small>OSI+ (7+3 layers) and Maslow's pyramid as one coupled wave instrument</small></h1>
   <div class="toolbar" id="toolbar"></div>
-  <div class="links"><a id="share-link" title="Copies a link that recreates this instrument as it is now: sliders, learned sand wiring, band personality and taste">share link</a><a href="https://github.com/springyworks/eftelaing-dust" target="_blank" rel="noopener">GitHub</a></div>
+  <div class="links"><canvas id="clip-lamp" width="26" height="26" title="audio health: level, clipping and dead branches - click for details"></canvas><a id="share-link" title="Copies a link that recreates this instrument as it is now: sliders, learned sand wiring, band personality and taste">share link</a><a href="https://github.com/springyworks/eftelaing-dust" target="_blank" rel="noopener">GitHub</a></div>
   <div class="status" id="status"></div>
 </header>
 <div class="notice" id="notice" hidden><div class="nbody" id="notice-body"></div><button class="btn small" id="notice-retest" type="button">Re-test speed</button><button class="btn small" id="notice-close" type="button">OK</button></div>

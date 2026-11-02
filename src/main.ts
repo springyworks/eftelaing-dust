@@ -235,7 +235,7 @@ function sayToast(text: string, ms = 5000): void {
   toastTimer = window.setTimeout(() => (toast.style.opacity = "0"), ms);
 }
 startRemote(params, {
-  snapshot: () => ({ style: audio.band?.styleInfo ?? "", phrase: audio.band?.phraseInfo ?? "", chord: audio.chord, instruments: audio.band?.patchInfo ?? "", harmony: audio.band?.harmonyNow ?? "", arrangement: audio.band?.arrangementInfo ?? "", personality: audio.band?.personalityInfo ?? "", soundOn: audio.enabled, solver: sim.solver, voice: voicePanel.info(), beat: beatInfo(), learning: { memory: sim.memory, dopa: Number(sim.dopa.toFixed(2)), rewards: sim.rewards } }),
+  snapshot: () => ({ audioHealth: lampReport ? { outDb: dbOf(lampReport.level), alcDb: Number(lampReport.duckDb.toFixed(1)), clipping: lampReport.clip, dead: lampReport.dead, liveSources: lampReport.sources.live } : null, style: audio.band?.styleInfo ?? "", phrase: audio.band?.phraseInfo ?? "", chord: audio.chord, instruments: audio.band?.patchInfo ?? "", harmony: audio.band?.harmonyNow ?? "", arrangement: audio.band?.arrangementInfo ?? "", personality: audio.band?.personalityInfo ?? "", soundOn: audio.enabled, solver: sim.solver, voice: voicePanel.info(), beat: beatInfo(), learning: { memory: sim.memory, dopa: Number(sim.dopa.toFixed(2)), rewards: sim.rewards } }),
   applied: () => controls.syncAll(),
   say: (text) => sayToast(text),
 });
@@ -541,6 +541,61 @@ function writeWiring(): void {
 // Notice bar under the header: what this device can do, what was chosen and why. The user is never left guessing.
 const noticeEl = $("notice");
 const noticeBody = $("notice-body");
+// ---- audio health lamp: a round glass that fills blue with the output level; the ring turns orange while the ALC
+// ---- ducks hard, red when a stage clipped, purple when a branch is dead (notes sent, no sound). Click for the details.
+const lampCanvas = $("clip-lamp") as HTMLCanvasElement;
+let lampReport: import("./meter").HealthReport | null = null;
+const dbOf = (x: number): string => (x <= 1e-4 ? "-inf" : (20 * Math.log10(x)).toFixed(1));
+function drawLamp(): void {
+  const c = lampCanvas.getContext("2d");
+  if (!c) return;
+  const r = lampReport;
+  c.clearRect(0, 0, 26, 26);
+  c.beginPath();
+  c.arc(13, 13, 11, 0, Math.PI * 2);
+  c.fillStyle = "#0b0f16";
+  c.fill();
+  if (r) {
+    c.save();
+    c.clip();
+    const hgt = 22 * Math.min(1, r.level);
+    c.fillStyle = r.clip ? "#ff5a3c" : "#3a5fd0";
+    c.fillRect(2, 24 - hgt, 22, hgt);
+    c.restore();
+  }
+  const ring = !r ? "#44506a" : r.clip ? "#ff5a3c" : r.dead.length > 0 ? "#b05aff" : r.duckDb < -3 ? "#ffb347" : "#44506a";
+  c.beginPath();
+  c.arc(13, 13, 11, 0, Math.PI * 2);
+  c.lineWidth = 2.5;
+  c.strokeStyle = ring;
+  c.stroke();
+}
+let lampTitleAt = 0;
+function lampTitle(): void {
+  const r = lampReport;
+  lampCanvas.title = !r
+    ? "audio health (sound is off) - click for details"
+    : `audio: out ${dbOf(r.level)} dB · ALC ${r.duckDb.toFixed(1)} dB · ${r.sources.live} live sources${r.clip ? ` · CLIPPING: ${r.clip}` : ""}${r.dead.length ? ` · DEAD: ${r.dead.join(", ")}` : ""} - click for details`;
+}
+lampCanvas.addEventListener("click", () => {
+  const r = lampReport;
+  if (!r) {
+    showNotice(["Sound is off, so there is no audio chain to watch yet. Switch the sound on first."], false);
+    return;
+  }
+  const lines = [
+    `Output peak ${dbOf(r.level)} dBFS · ALC + limiter ${r.duckDb.toFixed(1)} dB · live synth sources ${r.sources.live} (made ${r.sources.made} since the start)`,
+    ...r.stages.map((sg) => {
+      const bits = [`${sg.name}: ${dbOf(sg.hold)} dB`];
+      if (sg.clips > 0) bits.push(`clipped ${sg.clips}x${sg.clipAge !== null ? `, last ${sg.clipAge.toFixed(0)} s ago` : ""}`);
+      if (sg.dead) bits.push("DEAD: notes are being sent but no sound comes out");
+      else if (!sg.expected && sg.silentFor > 2) bits.push("idle");
+      return bits.join(" · ");
+    }),
+  ];
+  showNotice(lines, r.clip !== null || r.dead.length > 0);
+});
+
 function showNotice(lines: string[], warn: boolean): void {
   noticeBody.replaceChildren(...lines.map((t) => Object.assign(document.createElement("p"), { textContent: t })));
   noticeEl.classList.toggle("warn", warn);
@@ -769,6 +824,12 @@ function tick(): void {
     scope.push(sim.rms);
     scope.draw();
     audio.update(sim, params, selected);
+    lampReport = audio.healthInfo();
+    drawLamp();
+    if (performance.now() - lampTitleAt > 500) {
+      lampTitleAt = performance.now();
+      lampTitle();
+    }
     for (let l = 0; l < NUM_LAYERS; l++) if ((sim.spikes[l] ?? 0) > 0) leds[l]?.dot.classList.add("on");
   }
   beatStep(Math.min(0.1, (nowMs - beatLast) / 1000));

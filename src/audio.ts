@@ -18,6 +18,7 @@
 //
 // Raw jazz: pitches can be snapped to the chord tones of a ii-V-I-VI loop and plucks to a swung eighth-note grid.
 
+import { Tap, countSources, type HealthReport } from "./meter";
 import { LAYERS, NUM_LAYERS, clamp, type Params } from "./model";
 import { Band } from "./band";
 import type { Simulation } from "./sim";
@@ -224,6 +225,11 @@ export class WaveMonitor {
   private readonly meterBuf = new Float32Array(1024);
   analyser: AnalyserNode | null = null;
   enabled = false;
+  // Health watch: one Tap per stage of the chain, plus the live-source counter (the "is it clogging?" number).
+  private readonly taps: Tap[] = [];
+  private stageTaps: { master: Tap; out: Tap; raw: Tap; bass: Tap; comp: Tap; lead: Tap; ride: Tap; choir: Tap } | null = null;
+  readonly sources = { live: 0, made: 0 };
+  private tapLast = 0;
 
   /** The audio time of what the listener hears now (the output latency is already subtracted); null before sound was started. */
   get heardTime(): number | null {
@@ -247,6 +253,12 @@ export class WaveMonitor {
 
   private build(): void {
     const ctx = new AudioContext();
+    countSources(ctx, this.sources);
+    const tapOf = (name: string, over = 1): Tap => {
+      const t = new Tap(ctx, name, over);
+      this.taps.push(t);
+      return t;
+    };
     const master = ctx.createGain();
     master.gain.value = 0;
     // Output stage: ALC gain (feed-forward from a peak watcher) -> fast limiter -> tanh soft clipper -> out.
@@ -282,6 +294,10 @@ export class WaveMonitor {
     const unmake = ctx.createGain();
     unmake.gain.value = 0.876;
     alc.connect(comp).connect(unmake).connect(clip).connect(analyser).connect(ctx.destination);
+    const tMaster = tapOf("mix into the ALC");
+    tMaster.add(master);
+    const tOut = tapOf("output (after the safety chain)", 0.985);
+    tOut.add(clip);
     this.alc = alc;
     this.alcIn = alcIn;
     this.limiter = comp;
@@ -299,13 +315,25 @@ export class WaveMonitor {
     bandBus.gain.value = 1;
     bandBus.connect(master);
     this.bandBus = bandBus;
-    this.band = new Band(ctx, () => new Spatializer(ctx, bandBus, verb));
+    const voiceTaps = { bass: tapOf("band bass"), comp: tapOf("band keys"), lead: tapOf("band lead"), ride: tapOf("band ride") };
+    const choirTap = tapOf("band choir");
+    let spatN = 0;
+    this.band = new Band(ctx, () => {
+      const sp = new Spatializer(ctx, bandBus, verb);
+      // The Band makes its spatialisers in a fixed order: bass, keys, lead, ride, then the ten choir voices.
+      const t = spatN === 0 ? voiceTaps.bass : spatN === 1 ? voiceTaps.comp : spatN === 2 ? voiceTaps.lead : spatN === 3 ? voiceTaps.ride : choirTap;
+      spatN++;
+      t.add(sp.input);
+      return sp;
+    });
+    const rawTap = tapOf("raw FM voices");
     this.voices = Array.from({ length: NUM_LAYERS }, () => {
       const car = ctx.createOscillator();
       const mod = ctx.createOscillator();
       const modGain = ctx.createGain();
       const gain = ctx.createGain();
       const spat = new Spatializer(ctx, master, verb);
+      rawTap.add(spat.input);
       car.frequency.value = 110;
       mod.frequency.value = 220;
       gain.gain.value = 0;
@@ -318,7 +346,55 @@ export class WaveMonitor {
     this.ctx = ctx;
     this.master = master;
     this.analyser = analyser;
+    this.stageTaps = { master: tMaster, out: tOut, raw: rawTap, ...voiceTaps, choir: choirTap };
     void ctx.suspend();
+  }
+
+  /**
+   * Measures every tap and reports: the output level for the lamp, how hard the ALC and limiter pull, which stage clipped
+   * last, which stages are being sent notes but produce silence (dead branches), and how many sources are alive.
+   */
+  healthInfo(): HealthReport | null {
+    const ctx = this.ctx;
+    const st = this.stageTaps;
+    if (!ctx || !st) return null;
+    const now = ctx.currentTime;
+    const dt = clamp(now - this.tapLast || 0.016, 0.001, 0.5);
+    this.tapLast = now;
+    for (const t of this.taps) t.measure(dt);
+    const p = this.lastParams;
+    const on = this.enabled && ctx.state === "running" && !!p;
+    const sent = this.band ? this.band.sentLevels() : { bass: 0, comp: 0, lead: 0, ride: 0, choir: 0 };
+    const bandOn = on && !!p && p.audioMode !== "raw" && p.bandLevel > 0.05;
+    const exp = {
+      raw: on && !!p && p.audioMode !== "brain" && p.rawLevel > 0.05,
+      bass: bandOn && !!p && p.bandBass > 0.05 && sent.bass > 0.04,
+      comp: bandOn && !!p && p.bandKeys > 0.05 && sent.comp > 0.04,
+      lead: bandOn && !!p && p.bandLead > 0.05 && sent.lead > 0.04,
+      ride: bandOn && !!p && p.bandDrums > 0.05 && sent.ride > 0.04,
+      choir: bandOn && !!p && p.bandChoir > 0.05 && sent.choir > 0.04,
+    };
+    const anyExp = exp.raw || exp.bass || exp.comp || exp.lead || exp.ride || exp.choir;
+    const stages = [
+      st.raw.health(exp.raw, dt),
+      st.bass.health(exp.bass, dt),
+      st.comp.health(exp.comp, dt),
+      st.lead.health(exp.lead, dt),
+      st.ride.health(exp.ride, dt),
+      st.choir.health(exp.choir, dt),
+      st.master.health(anyExp, dt),
+      st.out.health(anyExp, dt),
+    ];
+    let clip: string | null = null;
+    let newest = 3;
+    for (const sh of stages) {
+      if (sh.clipAge !== null && sh.clipAge < newest) {
+        newest = sh.clipAge;
+        clip = sh.name;
+      }
+    }
+    if (clip === null && this.clipHold > 0) clip = "mix into the ALC";
+    return { level: clamp(st.out.hold, 0, 1), duckDb: this.reductionDb, clip, dead: stages.filter((sh) => sh.dead).map((sh) => sh.name), sources: this.sources, stages };
   }
 
   // Automatic level control: attack instantly on a peak over the ceiling, release slowly (about 1.5 s).

@@ -566,6 +566,11 @@ export class Band {
     this.loud[key] = Math.max(this.loud[key], (vel / 127) * gain);
   }
 
+  /** How recently each voice was *sent* notes (0..1, decays over seconds): the health watch compares this with real audio. */
+  sentLevels(): Record<VoiceKey | "choir", number> {
+    return { ...this.loud };
+  }
+
   /** Name of the slider of the voice that currently dominates the mix, and of the one that is most buried. */
   dominant(): { loud: string; quiet: string } {
     const names = { bass: "bandBass", comp: "bandKeys", lead: "bandLead", ride: "bandDrums", choir: "bandChoir" } as const;
