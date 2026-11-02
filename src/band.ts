@@ -25,7 +25,7 @@
 
 import { NUM_LAYERS, NUM_LEVELS, clamp, type BandStyle, type Params } from "./model";
 import type { Simulation } from "./sim";
-import { BOSSA_CLAVE, BOSSA_KICK, CHICKEN, FUNK_BASS, GHOST_SLOTS, KICKS, Personality, RIFF_RHYTHMS, STYLES, STYLE_IDS, progressionCount, progressionOf, type Chord, type StyleId } from "./style";
+import { BOSSA_CLAVE, BOSSA_KICK, CHICKEN, FUNK_BASS, GHOST_SLOTS, KICKS, Personality, STYLES, STYLE_IDS, progressionCount, progressionOf, type Chord, type StyleId } from "./style";
 
 export interface Spat {
   readonly input: AudioNode;
@@ -175,7 +175,7 @@ export class Band {
     ride: { prev: 0, x: 1, last: -99 },
   };
   private feel = { variation: 0.5, human: 0.5, switchRate: 0.5 };
-  private opts = { riffs: 0.6, groove: 0.6, learn: 0.5, style: "auto" as BandStyle };
+  private opts = { riffs: 0.6, groove: 0.6, learn: 0.5, evolve: 0.5, style: "auto" as BandStyle };
   // The brain's personality (persistent) and the style it is playing; see style.ts.
   readonly brain = new Personality();
   style: StyleId = "swing";
@@ -189,7 +189,12 @@ export class Band {
   private fluent = 0.4;
   private phrase: Note16[] = [];
   private prevPhrase: Note16[] = [];
-  private riff: { rhythm: number; steps: number[]; left: number } | null = null;
+  private riff: { rhythm: number; pat: string; steps: number[]; left: number } | null = null;
+  private curRun: string | null = null;
+  private answers = 0;
+  private runHist: string[] = [];
+  private lastRun: { notes: Note16[]; pool: number[]; left: number } | null = null;
+  private l6prev = 0;
   private bassPat = 0;
   private compPat = 0;
   private kickPat = 0;
@@ -275,7 +280,7 @@ export class Band {
     this.sim = sim;
     this.lv = { bass: p.bandBass, comp: p.bandKeys, lead: p.bandLead, ride: p.bandDrums, choir: p.bandChoir * brain };
     this.feel = { variation: p.bandVariation, human: p.bandHuman, switchRate: p.bandSwitch };
-    this.opts = { riffs: p.bandRiffs, groove: p.bandGroove, learn: p.bandLearn, style: p.bandStyle };
+    this.opts = { riffs: p.bandRiffs, groove: p.bandGroove, learn: p.bandLearn, evolve: p.bandEvolve, style: p.bandStyle };
     this.fluent = this.brain.fluency(this.style);
     // The swing slider shifts the style's own feel; a young brain swings shallowly, a practised one in full triplets.
     this.swingNow = clamp(STYLES[this.style].swing * (0.55 + 0.45 * this.fluent) + (p.swing - 0.5) * 0.5, 0, 1);
@@ -342,6 +347,7 @@ export class Band {
   /** A number in 0..1 taken from the wave field of layer l: the state of the stack instead of a dice. */
   private q(l: number): number {
     const sim = this.sim;
+    l %= NUM_LAYERS; // dice numbers above the last layer wrap round to the lower tanks
     const u = sim?.u[l];
     if (!sim || !u || u.length === 0) return 0.5;
     this.qi = (this.qi + 7919) % u.length;
@@ -539,6 +545,14 @@ export class Band {
     }
     this.prevPhrase = this.phrase;
     this.phrase = silent ? [] : this.makePhrase(bar, f, th);
+    if (!silent && bar % 4 === 0 && (this.q(12) + this.answers * 0.382) % 1 < 0.4 * this.opts.evolve) {
+      // the dice are the stack's, shifted by a counter so that a slow field cannot pin the same mutation; a failed child is retried
+      for (let a = 0; a < 5; a++) {
+        this.answers += 1;
+        const j = this.answers * 0.618;
+        if (this.brain.evolve(this.opts.evolve, (this.q(13) + j) % 1, (this.q(14) + j * 1.7) % 1, (this.q(15) + j * 2.3) % 1)) break;
+      }
+    }
     const st = STYLES[this.style];
     this.styleInfo = `${st.name} (${this.opts.style === "auto" ? "the brain's pick" : "locked"}) · progression ${this.prog + 1}/${progressionCount(this.style)} · swing ${Math.round(this.swingNow * 100)}% · ${Math.round(this.bpm)} bpm`;
   }
@@ -618,7 +632,8 @@ export class Band {
     if (st.bass === "funk") keys.push(`bass:${this.bassPat}`);
     if (st.comp === "chicken") keys.push(`comp:${this.compPat}`);
     if (st.drums !== "swing" && st.drums !== "bossa" && st.drums !== "none") keys.push(`kick:${this.kickPat}`);
-    if (this.riff && this.phrase.length > 0 && (st.lead === "funk" || st.lead === "fusion")) keys.push(`riff:${this.riff.rhythm}`);
+    if (this.curRun && this.phrase.length > 0) keys.push(`run:${this.curRun}`);
+    if (this.riff && this.phrase.length > 0 && !this.curRun && (st.lead === "funk" || st.lead === "fusion")) keys.push(`riff:${this.riff.rhythm}`);
     return keys;
   }
 
@@ -683,6 +698,143 @@ export class Band {
     return best;
   }
 
+  private static readonly RUN_KINDS = ["scale run", "arpeggio", "chromatic run", "zigzag", "cells 1-2-3-5", "cells 1-3-2-4", "cells 4-3-2-1", "scale and turn"] as const;
+  private static readonly CELLS: Record<string, readonly number[]> = {
+    "cells 1-2-3-5": [0, 1, 2, 4],
+    "cells 1-3-2-4": [0, 2, 1, 3],
+    "cells 4-3-2-1": [3, 2, 1, 0],
+  };
+
+  /** Picks a kind of run: liked ones more often, and never the same as the last one or two. */
+  private pickRunKind(): string {
+    const kinds = Band.RUN_KINDS;
+    const w = kinds.map((k) => {
+      let x = Math.exp(1.6 * (this.brain.taste[`run:${k}`] ?? 0));
+      const last = this.runHist.lastIndexOf(k);
+      if (last === this.runHist.length - 1) x *= 0.1;
+      else if (last >= 0) x *= 0.45;
+      return x;
+    });
+    this.answers += 1;
+    let x = ((this.q(15) + this.answers * 0.618) % 1) * w.reduce((a, b) => a + b, 0);
+    for (let i = 0; i < kinds.length; i++) {
+      x -= w[i] ?? 0;
+      if (x < 0) return kinds[i] ?? "scale run";
+    }
+    return "scale run";
+  }
+
+  /**
+   * A running line: a scale run, an arpeggio through the chord, a chromatic run that lands on a tone of the next chord, a
+   * zigzag, or one of the digital cells jazz players practise (1-2-3-5, 1-3-2-4, 4-3-2-1) moved along the scale. Direction
+   * follows the theme and whether layer 6 (Presentation) is growing or fading; the start slot, the length and the holes come
+   * from the layers; the line breathes (a rest at the end, the last note held) and swells in the middle.
+   */
+  private makeRun(f: Features, th: Theme | undefined, cur: Chord, next: Chord, centre: number, eighths: boolean, odd: boolean): Note16[] {
+    const fl = this.fluent;
+    const stride = eighths ? 2 : 1;
+    const kind = this.pickRunKind();
+    const deg = th?.deg ?? [];
+    const l6 = f.rms[5] ?? 0;
+    const rising = l6 > this.l6prev;
+    this.l6prev = this.l6prev * 0.7 + l6 * 0.3;
+    let dir = this.q(3) < 0.65 ? (rising ? 1 : -1) : (deg[4] ?? 0) >= (deg[0] ?? 0) ? 1 : -1;
+    const start = [0, 0, 2, 4][Math.floor(this.q(4) * 3.99)] ?? 0;
+    const slots = Math.floor((16 - start) / stride) - 1;
+    const len = clamp(Math.round(5 + (3 + 6 * fl) * this.q(5)), 5, Math.max(5, slots));
+    const scale = this.poolOf(cur.scale, 52, 90);
+    const tones = this.poolOf(cur.bass.map((i) => (cur.root + i) % 12), 50, 92);
+    const idxs: number[] = [];
+    const midis: number[] = [];
+    let pool = scale;
+    let idx = this.nearest(scale, centre + (dir > 0 ? -4 : 4));
+    if (kind === "arpeggio") {
+      pool = tones;
+      idx = this.nearest(tones, centre + (dir > 0 ? -5 : 5));
+    }
+    const cell = Band.CELLS[kind];
+    for (let j = 0; j < len; j++) {
+      let at: number;
+      if (cell) {
+        const g = Math.floor(j / 4);
+        at = idx + dir * g + (cell[j % 4] ?? 0);
+        if (g > 0 && j % 4 === 0 && this.q(6) < 0.2) dir = -dir;
+      } else if (kind === "zigzag") {
+        at = idx;
+        idx += j % 2 === 0 ? 2 * dir : -dir;
+      } else if (kind === "scale and turn") {
+        at = idx + (j % 4 === 3 ? -dir : 0);
+        if (j % 4 !== 3) idx += dir;
+      } else {
+        at = idx;
+        idx += dir;
+        if (this.q(7) < 0.1 + 0.08 * (1 - fl) * (j > 3 ? 1 : 0)) dir = -dir;
+      }
+      if (at <= 0 || at >= pool.length - 1) {
+        dir = -dir;
+        idx = clamp(idx, 1, pool.length - 2);
+        at = clamp(at, 0, pool.length - 1);
+      }
+      idxs.push(at);
+      midis.push(pool[clamp(at, 0, pool.length - 1)] ?? 69);
+    }
+    if (kind === "chromatic run" && midis.length >= 4) {
+      const target = this.snapChord(midis[midis.length - 1] ?? 69, next);
+      const from = dir > 0 ? -3 : 3;
+      for (let k = 0; k < 4; k++) midis[midis.length - 4 + k] = target + from - Math.sign(from) * k;
+    } else if (odd && this.q(8) < 0.3 + 0.5 * fl && midis.length >= 3) {
+      // an enclosure of a chord tone of the next chord, as in bebop
+      const target = this.snapChord(midis[midis.length - 1] ?? 69, next);
+      midis[midis.length - 3] = target + 2;
+      midis[midis.length - 2] = target - 1;
+      midis[midis.length - 1] = target;
+    }
+    const out: Note16[] = [];
+    midis.forEach((n, j) => {
+      if (j > 0 && j < len - 1 && this.q(9) < 0.07 * (1.4 - fl)) return; // a hole: nobody plays every note
+      const arc = Math.round(7 * Math.sin((Math.PI * (j + 0.5)) / len));
+      out.push({ i: start + j * stride, n, v: arc - 3 + (j % 4 === 0 ? 3 : 0), len: j === len - 1 ? stride * 2 : stride });
+    });
+    this.curRun = kind;
+    this.runHist = [...this.runHist.slice(-3), kind];
+    this.lastRun = { notes: out, pool, left: 1 };
+    this.phraseInfo = `${kind}, ${out.length} notes ${dir > 0 ? "up" : "down"}${rising ? " (L6 swelling)" : " (L6 fading)"}${this.brain.generation ? ` · gen ${this.brain.generation}` : ""}`;
+    return out;
+  }
+
+  /** Call and response: the last run answered by its inversion, its retrograde or itself a step higher or lower. */
+  private developRun(prev: { notes: Note16[]; pool: number[] }, next: Chord): Note16[] {
+    const pool = prev.pool;
+    if (prev.notes.length < 3 || pool.length < 4) return [];
+    this.answers += 1;
+    const op = Math.floor(((this.q(10) + this.answers * 0.618) % 1) * 3); // the field moves slowly; the counter keeps the answers from sticking to one device
+    const first = prev.notes[0]?.n ?? 69;
+    const at = (m: number): number => this.nearest(pool, m);
+    const shift = this.q(11) < 0.5 ? 2 : -2;
+    const out = prev.notes.map((n, k) => {
+      let m = n.n;
+      if (op === 0) m = pool[clamp(at(2 * first - n.n), 0, pool.length - 1)] ?? n.n;
+      else if (op === 1) m = prev.notes[prev.notes.length - 1 - k]?.n ?? n.n;
+      else m = pool[clamp(at(n.n) + shift, 0, pool.length - 1)] ?? n.n;
+      return { ...n, n: m };
+    });
+    if (op === 1) {
+      // the retrograde keeps the rhythm of the original
+      out.forEach((n, k) => {
+        const src = prev.notes[k];
+        if (src) {
+          n.i = src.i;
+          n.len = src.len;
+        }
+      });
+    }
+    const last = out[out.length - 1];
+    if (last) last.n = this.snapChord(last.n, next);
+    this.curRun = "answer";
+    this.phraseInfo = `answer to the last run (${["inversion", "retrograde", shift > 0 ? "a step up" : "a step down"][op]})`;
+    return out;
+  }
+
   /**
    * The lead phrase of a bar, or [] to play the plain theme. Everything is read from the layers: the contour from the theme
    * (the sand-bed scan line), the pitch centre from the tanks' energy centroids, rests and mutations from the wave field.
@@ -695,7 +847,7 @@ export class Band {
   private makePhrase(bar: number, f: Features, th: Theme | undefined): Note16[] {
     const st = STYLES[this.style];
     const fl = this.fluent;
-    const odds = clamp(st.lick * (0.3 + 1.4 * this.opts.riffs) * (0.6 + 0.6 * this.brain.chops), 0, 0.97);
+    const odds = clamp(Math.max(st.lick, 0.7) * (0.3 + 1.4 * this.opts.riffs) * (0.6 + 0.6 * this.brain.chops), 0, 0.97);
     this.phraseInfo = "";
     if (st.lead === "theme" || f.d < 0.08 || this.q(2) >= odds) return [];
     const cur = this.cur;
@@ -706,6 +858,19 @@ export class Band {
     const odd = bar % 2 === 1;
     const out: Note16[] = [];
 
+    this.curRun = null;
+    if (st.lead !== "baroque") {
+      const runOdds = clamp((0.15 + 0.55 * this.opts.riffs) * (0.5 + 0.7 * this.brain.chops) * (0.7 + 0.6 * vr) * (st.lead === "funk" ? 0.8 : 1), 0, 0.85);
+      if (this.lastRun && this.lastRun.left > 0 && this.q(15) < 0.55) {
+        const dev = this.developRun(this.lastRun, next);
+        this.lastRun.left = 0;
+        if (dev.length > 0) return dev;
+      }
+      if (this.q(14) < runOdds) {
+        const run = this.makeRun(f, th, cur, next, centre, st.lead === "swing" || st.lead === "bebop", odd);
+        if (run.length > 0) return run;
+      }
+    }
     if (st.lead === "swing" || st.lead === "bebop") {
       const bop = st.lead === "bebop";
       const pool = this.poolOf(cur.scale);
@@ -810,19 +975,28 @@ export class Band {
 
     // Riff: a rhythm, a contour and a repeat count; the riff is kept for two to four bars and transposed onto each chord.
     if (!this.riff || this.riff.left <= 0) {
-      const rhythm = this.brain.pick("riff:", RIFF_RHYTHMS.length, this.q(8));
-      const hits = (RIFF_RHYTHMS[rhythm] ?? "").split("").filter((c) => c === "x").length;
-      this.riff = { rhythm, steps: Array.from({ length: hits }, (_, j) => Math.round((deg[j % 8] ?? 0) / 2)), left: 2 + Math.floor(this.q(9) * 3) };
+      const rhythm = this.brain.pick("riff:", this.brain.rhythms.length, this.q(8));
+      const pat = this.brain.rhythms[rhythm] ?? "x..x.x..x.x..x..";
+      const hits = pat.split("").filter((c) => c === "x").length;
+      // the contour is the theme's, bent by the layers' noise so two riffs on the same rhythm still differ
+      const steps = Array.from({ length: hits }, (_, j) => Math.round((deg[j % 8] ?? 0) / 2 + (this.q(13) - 0.5) * 3 * vr));
+      this.riff = { rhythm, pat, steps, left: 2 + Math.floor(this.q(9) * 3) };
     }
     const riff = this.riff;
     riff.left--;
-    if (this.q(10) < 0.2 + 0.5 * vr) {
-      const j = Math.floor(this.q(11) * riff.steps.length) % Math.max(1, riff.steps.length);
-      riff.steps[j] = (riff.steps[j] ?? 0) + (this.q(12) < 0.5 ? -1 : 1);
+    // Each repeat develops the riff: one step changed, inverted, played backwards or lifted.
+    if (this.q(10) < 0.25 + 0.6 * vr) {
+      const op = Math.floor(this.q(11) * 4);
+      if (op === 0) {
+        const j = Math.floor(this.q(12) * riff.steps.length) % Math.max(1, riff.steps.length);
+        riff.steps[j] = (riff.steps[j] ?? 0) + (this.q(14) < 0.5 ? -1 : 1);
+      } else if (op === 1) riff.steps = riff.steps.map((x) => -x);
+      else if (op === 2) riff.steps.reverse();
+      else riff.steps = riff.steps.map((x, j) => x + (j === riff.steps.length - 1 ? 2 : 1));
     }
     const pent = this.poolOf(pentPcs(cur));
     const anchor = this.nearest(pent, centre - 3);
-    const rhythm = RIFF_RHYTHMS[riff.rhythm] ?? "";
+    const rhythm = riff.pat;
     let j = 0;
     for (let i = 0; i < 16; i++) {
       if (rhythm[i] !== "x") continue;
@@ -835,7 +1009,7 @@ export class Band {
       // the last repeat ends in a little fill
       for (let k = 0; k < 3; k++) out.push({ i: 13 + k, n: pent[clamp(anchor + 3 - k, 0, pent.length - 1)] ?? 69, v: 2 + k, len: 1 });
     }
-    this.phraseInfo = `riff ${riff.rhythm + 1}, repeat ${riff.left + 1} more`;
+    this.phraseInfo = `riff ${riff.rhythm + 1}/${this.brain.rhythms.length} (generation ${this.brain.generation}), repeat ${riff.left + 1} more`;
     return out;
   }
 

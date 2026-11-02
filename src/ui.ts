@@ -202,6 +202,7 @@ const GROUPS: readonly Group[] = [
       },
       { kind: "slider", key: "bandRiffs", label: "Licks and riffs (0 plain theme)", min: 0, max: 1, step: 0.01, help: "How often the lead plays a phrase instead of the plain layer-read theme: fast bebop runs with enclosures, 16th-note fusion bursts, repeated funk riffs. The notes still come from the layers; this only decides how much of the time the soloist is busy." },
       { kind: "slider", key: "bandGroove", label: "Groove (ghost notes, syncopation)", min: 0, max: 1, step: 0.01, help: "Ghost snares, kick feathering, bass skips, anticipated chord stabs and 16th-note hat work. 0 is square and plain, 1 is a pocket full of small notes." },
+      { kind: "slider", key: "bandEvolve", label: "Evolution of riffs (0 frozen)", min: 0, max: 1, step: 0.01, help: "How fast the brain's riff vocabulary evolves while it plays. Every few bars a riff rhythm that was liked is mutated (steps flipped, shifted or mirrored) and the child joins the pool; the least liked rhythm is dropped when the pool is full. The pool is saved in this browser, so after hours of playing the band has drifted away from its seed riffs. Nice makes a riff survive, Try again makes it die out. 0 freezes the vocabulary." },
       { kind: "slider", key: "bandLearn", label: "Brain learns (0 frozen)", min: 0, max: 1, step: 0.01, help: "Learning rate of the brain's personality: its swing skill, lick vocabulary and per-style mastery grow while it plays (faster when the layers are in sync and healthy) and with your Yes ratings; your No, Boring and Hellish pull the styles it likes down. It is saved in this browser. 0 keeps it as it is." },
       { kind: "slider", key: "tempo", label: "Band tempo (bpm)", min: 60, max: 160, step: 1, help: "Base tempo of the band, multiplied by the style (bebop about 30% faster, bossa 12% slower). A busy bottom layer pushes it up to about 6% faster, a quiet one slows it by the same amount. Swing is set in the jazz group." },
       {
@@ -238,6 +239,9 @@ const GROUPS: readonly Group[] = [
 ];
 
 export const SLIDERS: readonly SliderSpec[] = GROUPS.flatMap((g) => g.specs.filter((sp): sp is SliderSpec => sp.kind === "slider"));
+
+/** Selects an outside controller (the MCP relay) may change; the dimension and MIDI output stay with the human. */
+export const SELECTS: readonly SelectSpec[] = GROUPS.flatMap((g) => g.specs.filter((sp): sp is SelectSpec => sp.kind === "select" && sp.key !== "dimension" && sp.key !== "midiOut"));
 
 let popup: HTMLDivElement | null = null;
 

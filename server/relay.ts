@@ -6,7 +6,7 @@
 // The browser app POSTs notes to /api/feedback; they are appended to feedback/notes.jsonl. The MCP server lists the open
 // notes (with the sliders / band snapshot taken when each was written) so an assistant can analyse what is really lacking.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -16,13 +16,18 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DIR = join(ROOT, "feedback");
 const NOTES = join(DIR, "notes.jsonl");
 const ACKS = join(DIR, "acks.jsonl");
+const COMMANDS = join(DIR, "commands.jsonl");
+const STATE = join(DIR, "state.json");
 const PORT = Number(process.env["PORT"] ?? 8787);
 const MAX_BODY = 64 * 1024;
 
 interface Note {
   id: string;
   t: string;
+  /** Unix time in milliseconds when the human wrote it (browser clock) and when the relay got it: arrivals can be late or out of order. */
+  ts: number;
   receivedAt: string;
+  receivedTs: number;
   text: string;
   rating?: string;
   hints?: string[];
@@ -31,6 +36,7 @@ interface Note {
 interface Ack {
   id: string;
   at: string;
+  ts?: number;
   reply: string;
 }
 
@@ -60,7 +66,7 @@ function listNotes(status: "open" | "all", limit: number): (Note & { acked?: Ack
     return a ? { ...n, acked: a } : n;
   });
   const sel = status === "open" ? all.filter((n) => !("acked" in n)) : all;
-  return sel.slice(-limit);
+  return sel.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0)).slice(-limit);
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -70,18 +76,20 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 /** Validates an untrusted note body from the browser. */
 function parseNote(body: unknown): Note | string {
   if (!isRecord(body)) return "body must be an object";
-  const { id, t, text, rating, hints, context } = body;
+  const { id, t, ts, text, rating, hints, context } = body;
   if (typeof text !== "string" || !text.trim()) return "text is required";
   if (typeof id !== "string" || id.length === 0 || id.length > 64) return "id is required";
   const note: Note = {
     id,
     t: typeof t === "string" ? t.slice(0, 40) : new Date().toISOString(),
+    ts: typeof ts === "number" && Number.isFinite(ts) && ts > 0 ? Math.round(ts) : Date.now(),
     receivedAt: new Date().toISOString(),
+    receivedTs: Date.now(),
     text: text.trim().slice(0, 2000),
     context: {},
   };
   if (typeof rating === "string") note.rating = rating.slice(0, 20);
-  if (Array.isArray(hints)) note.hints = hints.filter((h): h is string => typeof h === "string").slice(0, 12).map((h) => h.slice(0, 20));
+  if (Array.isArray(hints)) note.hints = hints.filter((h): h is string => typeof h === "string").slice(0, 24).map((h) => h.slice(0, 40));
   if (isRecord(context) && JSON.stringify(context).length <= 40_000) note.context = context;
   return note;
 }
@@ -94,8 +102,50 @@ function storeNote(note: Note): boolean {
 
 function ack(id: string, reply: string): boolean {
   if (!readLines<Note>(NOTES).some((n) => n.id === id)) return false;
-  append(ACKS, { id, at: new Date().toISOString(), reply: reply.slice(0, 4000) } satisfies Ack);
+  append(ACKS, { id, at: new Date().toISOString(), ts: Date.now(), reply: reply.slice(0, 4000) } satisfies Ack);
   return true;
+}
+
+/** A request from the assistant to move sliders of the running app; the browser polls for them and applies what it knows. */
+interface Command {
+  seq: number;
+  at: string;
+  ts: number;
+  set: Record<string, number | string>;
+  why: string;
+}
+
+function readCommands(): Command[] {
+  return readLines<Command>(COMMANDS);
+}
+
+/** Validates the slider values the assistant sends: at most 40 keys, short names, numbers or short strings only. */
+function parseSet(values: unknown): Record<string, number | string> | string {
+  if (!isRecord(values)) return "values must be an object of slider name to value";
+  const out: Record<string, number | string> = {};
+  for (const [k, v] of Object.entries(values)) {
+    if (!/^[A-Za-z][A-Za-z0-9]{0,31}$/.test(k)) return `bad slider name ${k.slice(0, 40)}`;
+    if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+    else if (typeof v === "string" && v.length <= 32) out[k] = v;
+    else return `bad value for ${k}`;
+  }
+  const n = Object.keys(out).length;
+  return n === 0 ? "no sliders given" : n > 40 ? "too many sliders" : out;
+}
+
+function addCommand(set: Record<string, number | string>, why: string): Command {
+  const cmd: Command = { seq: readCommands().length + 1, at: new Date().toISOString(), ts: Date.now(), set, why: why.slice(0, 300) };
+  append(COMMANDS, cmd);
+  return cmd;
+}
+
+function readState(): unknown {
+  if (!existsSync(STATE)) return null;
+  try {
+    return JSON.parse(readFileSync(STATE, "utf8")) as unknown;
+  } catch {
+    return null;
+  }
 }
 
 function stats(): Record<string, unknown> {
@@ -178,6 +228,18 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (typeof note === "string") return send(res, 400, { error: note });
     return send(res, 200, { ok: true, duplicate: !storeNote(note) });
   }
+  if (req.method === "GET" && url.pathname === "/api/commands") {
+    const all = readCommands();
+    const after = Number(url.searchParams.get("after"));
+    return send(res, 200, { seq: all.length, commands: Number.isFinite(after) && url.searchParams.has("after") ? all.filter((c) => c.seq > after) : [] });
+  }
+  if (req.method === "POST" && url.pathname === "/api/state") {
+    const body = await readBody(req);
+    if (!isRecord(body) || JSON.stringify(body).length > 60_000) return send(res, 400, { error: "bad state" });
+    mkdirSync(DIR, { recursive: true });
+    writeFileSync(STATE, JSON.stringify({ ...body, receivedAt: new Date().toISOString() }));
+    return send(res, 200, { ok: true });
+  }
   if (req.method === "POST" && url.pathname === "/api/ack") {
     const body = await readBody(req);
     if (!isRecord(body) || typeof body["id"] !== "string") return send(res, 400, { error: "id is required" });
@@ -223,6 +285,25 @@ const TOOLS = [
     description: "Counts of notes by status, rating and hint chip.",
     inputSchema: { type: "object", properties: {} },
   },
+  {
+    name: "get_state",
+    description:
+      "The live state of the running app as last reported by the browser (every few seconds): all sliders with their current value, range and meaning, the band style, phrase, chord, instruments, the brain's personality (riff pool, generation) and learning state. Read it before set_sliders to see the valid names and ranges.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "set_sliders",
+    description:
+      "Move sliders / selects of the running Eftelaing-dust app (the browser applies them within a couple of seconds, clamped to each slider's range, and the Monte Carlo exerciser treats them like the human's own moves). Examples: bandRiffs 0..1 (how often the lead runs and riffs), bandVariation, bandEvolve, bandGroove, bandHuman, bandStyle ('auto','swing','bebop','fusion','funk','bossa','baroque'), tempo. Use get_state for the full list.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        values: { type: "object", description: "slider name to new value (number, or string for selects)", additionalProperties: { type: ["number", "string"] } },
+        why: { type: "string", description: "one line on why, shown to the human" },
+      },
+      required: ["values"],
+    },
+  },
 ] as const;
 
 function textResult(value: unknown, isError = false): Record<string, unknown> {
@@ -241,6 +322,13 @@ function callTool(name: string, args: Record<string, unknown>): Record<string, u
     return ack(args["id"], reply) ? textResult("acknowledged") : textResult("unknown note id", true);
   }
   if (name === "feedback_stats") return textResult(stats());
+  if (name === "get_state") return textResult(readState() ?? "no state yet: open the app with the relay running");
+  if (name === "set_sliders") {
+    const set = parseSet(args["values"]);
+    if (typeof set === "string") return textResult(set, true);
+    const cmd = addCommand(set, typeof args["why"] === "string" ? args["why"] : "");
+    return textResult(`queued as command ${cmd.seq}; the browser applies it within a few seconds (check get_state, lastCommand)`);
+  }
   return textResult(`unknown tool ${name}`, true);
 }
 

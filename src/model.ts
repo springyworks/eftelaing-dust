@@ -113,6 +113,7 @@ export interface Params {
   bandRiffs: number; // how often the lead plays fast licks and riffs instead of the plain theme
   bandGroove: number; // ghost notes, syncopation, anticipations and 16th-note hat work in bass, drums and keys
   bandLearn: number; // learning rate of the brain's personality (0 = it stays as it is)
+  bandEvolve: number; // how fast the riff vocabulary evolves while the band plays (0 = frozen)
   midiOut: MidiOut; // also send the band as MIDI to the first Web MIDI output
   swing: number; // 0 = plucks sound immediately, >0 = quantised to a swung eighth-note grid
 }
@@ -172,10 +173,11 @@ export const DEFAULT_PARAMS: Params = {
   bandRiffs: 0.6,
   bandGroove: 0.6,
   bandLearn: 0.5,
+  bandEvolve: 0.5,
 };
 
 // Settings that describe how the human sees and hears the instrument; scenarios leave them alone.
-export const PRESENTATION_KEYS = ["volume", "alcCeiling", "listen", "fmDepth", "spikeSens", "projection", "spatial", "width", "reverb", "jazz", "swing", "audioMode", "tempo", "midiOut", "bandBrain", "rawLevel", "bandLevel", "bandDensity", "bandChoir", "bandBass", "bandKeys", "bandLead", "bandDrums", "bandVariation", "bandHuman", "bandSwitch", "bandColor", "bandStyle", "bandRiffs", "bandGroove", "bandLearn", "matrixView"] as const;
+export const PRESENTATION_KEYS = ["volume", "alcCeiling", "listen", "fmDepth", "spikeSens", "projection", "spatial", "width", "reverb", "jazz", "swing", "audioMode", "tempo", "midiOut", "bandBrain", "rawLevel", "bandLevel", "bandDensity", "bandChoir", "bandBass", "bandKeys", "bandLead", "bandDrums", "bandVariation", "bandHuman", "bandSwitch", "bandColor", "bandStyle", "bandRiffs", "bandGroove", "bandLearn", "bandEvolve", "matrixView"] as const;
 
 export interface Scenario {
   readonly id: string;

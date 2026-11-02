@@ -4,6 +4,8 @@
 export interface Note {
   id: string;
   t: string;
+  /** Unix time in milliseconds: the relay sorts by it, so late or out-of-order arrivals still make sense. */
+  ts: number;
   text: string;
   rating?: string;
   hints?: string[];
@@ -22,7 +24,8 @@ const listeners = new Set<() => void>();
 function load(): Note[] {
   try {
     const raw = localStorage.getItem(KEY);
-    return raw ? (JSON.parse(raw) as Note[]) : [];
+    // notes queued by an older version have no unix time yet: derive it from the ISO time
+    return raw ? (JSON.parse(raw) as Note[]).map((n) => ({ ...n, ts: Number.isFinite(n.ts) ? n.ts : Date.parse(n.t) || Date.now() })) : [];
   } catch {
     return [];
   }
@@ -58,7 +61,8 @@ export function pendingNotes(): number {
 export function queueNote(text: string, extra: { rating?: string; hints?: string[] } = {}): boolean {
   const clean = text.trim().slice(0, 2000) || (extra.rating ? "(rating only, no text)" : "");
   if (!clean) return false;
-  const note: Note = { id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, t: new Date().toISOString(), text: clean, context: snapshot() };
+  const ts = Date.now();
+  const note: Note = { id: `${ts.toString(36)}-${Math.random().toString(36).slice(2, 6)}`, t: new Date(ts).toISOString(), ts, text: clean, context: snapshot() };
   if (extra.rating) note.rating = extra.rating;
   if (extra.hints?.length) note.hints = extra.hints;
   queue.push(note);

@@ -5,6 +5,8 @@ import { Exerciser } from "./exerciser";
 import { queueNote, setSnapshot } from "./feedback";
 import { proveLearning } from "./proof";
 import { Scope, TankView } from "./render";
+import { buildQuickChat } from "./quickchat";
+import { startRemote } from "./remote";
 import { Stack3D } from "./stack3d";
 import { Simulation, type MemoryMode, type Vec3 } from "./sim";
 import { buildControls, helpButton, hideHelp, showHelp } from "./ui";
@@ -190,6 +192,20 @@ setSnapshot(() => ({
   soundOn: audio.enabled,
   learning: { memory: sim.memory, dopa: Number(sim.dopa.toFixed(2)), rewards: sim.rewards, links: Array.from({ length: NUM_LAYERS - 1 }, (_, l) => Number(sim.learned(l).toFixed(2))) },
 }));
+const toast = document.createElement("div");
+toast.style.cssText = "position:fixed;left:50%;top:10px;transform:translateX(-50%);z-index:200;background:#1b2434;border:1px solid #5b8def;border-radius:8px;padding:6px 14px;font-size:13px;color:#dbe6ff;opacity:0;transition:opacity .4s;pointer-events:none";
+document.body.append(toast);
+let toastTimer = 0;
+startRemote(params, {
+  snapshot: () => ({ style: audio.band?.styleInfo ?? "", phrase: audio.band?.phraseInfo ?? "", chord: audio.chord, instruments: audio.band?.patchInfo ?? "", personality: audio.band?.personalityInfo ?? "", soundOn: audio.enabled, learning: { memory: sim.memory, dopa: Number(sim.dopa.toFixed(2)), rewards: sim.rewards } }),
+  applied: () => controls.syncAll(),
+  say: (text) => {
+    toast.textContent = text;
+    toast.style.opacity = "1";
+    window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => (toast.style.opacity = "0"), 5000);
+  },
+});
 const exerciser = new Exerciser($("exerciser"), params, () => controls.syncAll());
 exerciser.setMixHook(() => audio.band?.dominant() ?? null);
 exerciser.setTeachHook((r, h) => audio.band?.teach(r, h));
@@ -291,7 +307,14 @@ const niceBtn: HTMLButtonElement = button("Nice", "reward nice", () => encourage
 const againBtn: HTMLButtonElement = button("Try again", "reward again", () => encourage(false, againBtn));
 niceBtn.title = "Reward: this sounds good. Injects a hormone shot that strengthens the wiring between recently coherent layers. Click several times for more sugar.";
 againBtn.title = "Not quite: no punishment. Injects a negative shot that unlearns a little and rolls the wiring part-way back, then the brain tries something else.";
-toolbar.append(niceBtn, againBtn, rewardNote, playBtn, stepBtn, resetBtn, fireBtn, mcBtn, askBtn, soundBtn, helpBtn);
+const quickChat = buildQuickChat({
+  hints: (ids) => {
+    exerciser.hintNow(ids);
+    rewardNote.textContent = "Noted: the keywords steer the band, the message waits for the assistant.";
+  },
+  praise: () => encourage(true, niceBtn),
+});
+toolbar.append(niceBtn, againBtn, quickChat, rewardNote, playBtn, stepBtn, resetBtn, fireBtn, mcBtn, askBtn, soundBtn, helpBtn);
 
 $("tank-tools").append(
   button("Level the sand", "small", () => sim.flattenSand()),

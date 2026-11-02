@@ -145,6 +145,7 @@ export const BOSSA_CLAVE: readonly string[] = ["x.....x.....x...", "....x...x...
 
 // ---- personality ----
 
+const MAX_RHYTHMS = 28;
 const STORE = "eftelaing-dust.brain.v1";
 
 export interface PersonalityData {
@@ -159,6 +160,9 @@ export interface PersonalityData {
   taste?: Record<string, number>; // -1..1 per pattern ("riff:3", "bass:1", "prog:funk:0"), from praise
   praised?: number;
   retries?: number;
+  rhythms?: string[]; // the evolved pool of riff rhythms
+  generation?: number;
+  runs?: Record<string, number>; // how often each kind of run was played
 }
 
 const zero = (v: number): Record<StyleId, number> => ({ swing: v, bebop: v, fusion: v, funk: v, bossa: v, baroque: v });
@@ -175,6 +179,9 @@ export class Personality {
   taste: Record<string, number> = {};
   praised = 0;
   retries = 0;
+  /** Riff rhythms, 16 slots each. Starts as the seed table and evolves while the band plays: see evolve(). */
+  rhythms: string[] = [...RIFF_RHYTHMS];
+  generation = 0;
   /** The human said "same tune again": the next style change is forced and a fresh progression is chosen. */
   restless = false;
   /** The human asked for a style by name ("Want funk"): the band moves there at the next chord change. */
@@ -199,6 +206,11 @@ export class Personality {
           }
           this.praised = Number(d.praised) || 0;
           this.retries = Number(d.retries) || 0;
+          this.generation = Number(d.generation) || 0;
+          if (Array.isArray(d.rhythms)) {
+            const ok = d.rhythms.filter((r): r is string => typeof r === "string" && /^[x.]{16}$/.test(r)).slice(0, MAX_RHYTHMS);
+            if (ok.length >= 4) this.rhythms = ok;
+          }
           for (const [k, v] of Object.entries(d.taste ?? {})) if (Number.isFinite(v)) this.taste[k] = clamp(v, -1, 1);
         }
       }
@@ -305,6 +317,47 @@ export class Personality {
     return n - 1;
   }
 
+  /**
+   * Evolution of the riff vocabulary: a rhythm is picked (liked ones more often), a few of its steps are flipped, shifted or
+   * mirrored, and the child joins the pool. When the pool is full the least liked (never the newest) is replaced and its taste
+   * forgotten. Liked riffs get "nice" praise and survive; over hours of playing the pool drifts away from the seed table.
+   * `rate` (0..1) is the Evolution slider; u1..u3 are random numbers in 0..1.
+   */
+  evolve(rate: number, u1: number, u2: number, u3: number): string | null {
+    if (rate <= 0) return null;
+    const parent = this.rhythms[this.pick("riff:", this.rhythms.length, u1)] ?? "x..x.x..x.x..x..";
+    const cells = parent.split("");
+    const op = u2 * 4;
+    if (op < 2) {
+      const flips = 1 + Math.floor(u3 * 3);
+      for (let k = 0; k < flips; k++) {
+        const i = (Math.floor((u3 * 977 + k * 5.3 + u2 * 131) * 16) + k * 7) % 16;
+        cells[i] = cells[i] === "x" ? "." : "x";
+      }
+    } else if (op < 3) {
+      const sh = 1 + Math.floor(u3 * 3);
+      const r = parent.slice(-sh) + parent.slice(0, -sh);
+      cells.splice(0, 16, ...r.split(""));
+    } else {
+      cells.splice(0, 16, ...parent.split("").reverse());
+      cells[0] = "x";
+    }
+    const hits = cells.filter((c) => c === "x").length;
+    if (hits < 4 || hits > 11) return null;
+    const child = cells.join("");
+    if (this.rhythms.includes(child)) return null;
+    if (this.rhythms.length < MAX_RHYTHMS) this.rhythms.push(child);
+    else {
+      let worst = 0;
+      for (let i = 0; i < this.rhythms.length - 1; i++) if ((this.taste[`riff:${i}`] ?? 0) < (this.taste[`riff:${worst}`] ?? 0)) worst = i;
+      this.rhythms[worst] = child;
+      delete this.taste[`riff:${worst}`];
+    }
+    this.generation++;
+    this.dirty = true;
+    return child;
+  }
+
   /** What the brain has become so far, as a word. */
   stage(): string {
     const m = (this.skill + this.chops) / 2;
@@ -316,7 +369,7 @@ export class Personality {
     const likes = STYLE_IDS.filter((s) => this.liking[s] > 0.15)
       .sort((a, b) => this.liking[b] - this.liking[a])
       .map((s) => STYLES[s].name.toLowerCase());
-    return `${this.stage()} · ${Math.round(this.seconds / 60)} min played · swing skill ${pct(this.skill)} · licks ${pct(this.chops)} · ${STYLES[style].name} mastery ${pct(this.mastery[style])}${likes.length ? ` · you liked: ${likes.join(", ")}` : ""}${this.praised + this.retries > 0 ? ` · nice ${this.praised}× / try again ${this.retries}×` : ""}`;
+    return `${this.stage()} · ${Math.round(this.seconds / 60)} min played · swing skill ${pct(this.skill)} · licks ${pct(this.chops)} · ${STYLES[style].name} mastery ${pct(this.mastery[style])}${likes.length ? ` · you liked: ${likes.join(", ")}` : ""}${this.praised + this.retries > 0 ? ` · nice ${this.praised}× / try again ${this.retries}×` : ""} · ${this.rhythms.length} riff rhythms, generation ${this.generation}`;
   }
 
   clear(): void {
@@ -341,7 +394,7 @@ export class Personality {
   save(): void {
     this.lastSave = Date.now();
     this.dirty = false;
-    const data: PersonalityData = { v: 1, seconds: this.seconds, bars: this.bars, skill: this.skill, chops: this.chops, liking: this.liking, mastery: this.mastery, lessons: this.lessons, taste: this.taste, praised: this.praised, retries: this.retries };
+    const data: PersonalityData = { v: 1, seconds: this.seconds, bars: this.bars, skill: this.skill, chops: this.chops, liking: this.liking, mastery: this.mastery, lessons: this.lessons, taste: this.taste, praised: this.praised, retries: this.retries, rhythms: this.rhythms, generation: this.generation };
     try {
       localStorage.setItem(STORE, JSON.stringify(data));
     } catch {

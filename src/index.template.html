@@ -38,6 +38,15 @@
   .dopa .bar { position:absolute; top:0; bottom:0; border-radius:5px; }
   .learn-out { font-size:12px; color:var(--dim); line-height:1.5; margin-top:18px; }
   .tank-glow { box-shadow:0 0 0 2px #ffd56a, 0 0 18px #ffd56a99 !important; }
+  .qchat { display:inline-flex; align-items:center; gap:6px; }
+  .qchat input { width:230px; background:#0e1420; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:7px 10px; font:inherit; }
+  .qchat input:focus { outline:none; border-color:var(--acc); }
+  .qchat-status { font-size:12px; color:var(--acc); min-width:60px; }
+  .qchat-panel { position:fixed; top:80px; left:12px; right:12px; max-width:640px; max-height:70vh; overflow:auto; background:#121a28; border:1px solid var(--acc); border-radius:10px; padding:10px 12px; box-shadow:0 12px 40px #000a; z-index:60; }
+  .qchat-panel[hidden] { display:none; }
+  .qchat-row { display:flex; flex-wrap:wrap; align-items:center; gap:5px; margin:4px 0; }
+  .qchat-group { flex:0 0 86px; color:var(--acc); font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+  .qchat-foot { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; position:sticky; bottom:0; background:#121a28; padding-top:6px; }
   .reward-note { font-size:12px; color:var(--dim); max-width:360px; line-height:1.25; }
   @keyframes dlg-pulse { 0%,100% { box-shadow:0 10px 40px #000c, 0 0 0 0 #ffb34788; } 50% { box-shadow:0 10px 40px #000c, 0 0 0 10px #ffb34700; } }
   .status { font-size:12px; color:var(--dim); width:100%; }

@@ -68,6 +68,9 @@ const HINTS = [
   { id: "bland", group: "Harmony", label: "Harmony too plain", tip: "Theory: no tension and release, want colour and altered chords", push: [["bandColor", 1], ["jazz", 1]] },
 ] as const;
 type HintId = (typeof HINTS)[number]["id"];
+
+/** The hint chips as plain data, so other parts of the UI (the quick message popup) can offer the same keywords. */
+export const HINT_CHOICES: readonly { id: string; group: string; label: string; tip: string }[] = HINTS.map((h) => ({ id: h.id, group: h.group, label: h.label, tip: h.tip }));
 const OPPOSITE: Partial<Record<HintId, HintId>> = {
   flat: "wild", wild: "flat", dull: "harsh", harsh: "dull", stiff: "messy", messy: "stiff",
   loud: "lost", lost: "loud", thinbass: "boomy", boomy: "thinbass", washy: "dry", dry: "washy",
@@ -535,6 +538,26 @@ export class Exerciser {
     this.rate(r);
     if (this.auto) this.propose();
     else this.mode = "off";
+  }
+
+  /** Quick keywords from the message popup: the known ones steer the sliders and the band's taste right away (or on the next proposal while the exerciser runs). */
+  hintNow(ids: readonly string[]): void {
+    const known = HINTS.filter((h) => ids.includes(h.id));
+    if (known.length === 0) return;
+    for (const h of known) {
+      this.hints.add(h.id);
+      const opp = OPPOSITE[h.id];
+      if (opp && !ids.includes(opp)) this.hints.delete(opp);
+    }
+    this.teachHook?.(0.5, [...this.hints]);
+    if (!this.auto) {
+      this.apply(this.biased(this.vector()));
+      this.hints.clear();
+    }
+    this.syncChips();
+    this.save();
+    this.draw();
+    this.updateStatus(true);
   }
 
   /** A "nice" (true) or "try again" (false) click from the top bar: a soft vote for the current setting in the taste model. */
