@@ -451,6 +451,11 @@ export class WaveMonitor {
   }
 
   /** A note sung into the microphone: heard by the band (answered by the brain), optionally played at once as an instrument. */
+  /** The chord playing now, or null while the band is off. */
+  chordNow(): ReturnType<Band["chordNow"]> | null {
+    return this.band?.chordNow() ?? null;
+  }
+
   voiceNote(midi: number, vel: number, monitor: boolean): void {
     const p = this.lastParams;
     if (this.enabled && p && p.audioMode !== "raw") this.band?.voiceNote(midi, vel, monitor);

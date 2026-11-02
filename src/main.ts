@@ -10,7 +10,9 @@ import { startRemote } from "./remote";
 import { BeatLattice, Groove } from "./beat";
 import { Tesseract } from "./tesseract";
 import { buildVoicePanel, type BeatPos } from "./voicepanel";
+import { GpuSolver } from "./gpu";
 import { Stack3D } from "./stack3d";
+import { progressionOf } from "./style";
 import { Simulation, type MemoryMode, type Vec3 } from "./sim";
 import { buildControls, helpButton, hideHelp, showHelp } from "./ui";
 
@@ -202,7 +204,7 @@ toast.style.cssText = "position:fixed;left:50%;top:10px;transform:translateX(-50
 document.body.append(toast);
 let toastTimer = 0;
 startRemote(params, {
-  snapshot: () => ({ style: audio.band?.styleInfo ?? "", phrase: audio.band?.phraseInfo ?? "", chord: audio.chord, instruments: audio.band?.patchInfo ?? "", personality: audio.band?.personalityInfo ?? "", soundOn: audio.enabled, voice: voicePanel.info(), beat: beatInfo(), learning: { memory: sim.memory, dopa: Number(sim.dopa.toFixed(2)), rewards: sim.rewards } }),
+  snapshot: () => ({ style: audio.band?.styleInfo ?? "", phrase: audio.band?.phraseInfo ?? "", chord: audio.chord, instruments: audio.band?.patchInfo ?? "", personality: audio.band?.personalityInfo ?? "", soundOn: audio.enabled, solver: sim.solver, voice: voicePanel.info(), beat: beatInfo(), learning: { memory: sim.memory, dopa: Number(sim.dopa.toFixed(2)), rewards: sim.rewards } }),
   applied: () => controls.syncAll(),
   say: (text) => {
     toast.textContent = text;
@@ -407,6 +409,12 @@ const voicePanel = buildVoicePanel($("voicebox"), {
   },
   strike: (x, y, amp) => sim.fire(0, [x, y, 0.5], amp),
   note: (midi, vel, monitor) => audio.voiceNote(midi, vel, monitor),
+  chord: () => audio.chordNow() ?? progressionOf("swing", 0, 0.5)[0] ?? { name: "Dm11", root: 50, bass: [0, 3, 7, 10], voicing: [], scale: [2, 4, 5, 7, 9, 11, 0] },
+  colour: () => params.bandColor,
+  tuneLevel: () => params.voiceTune,
+  setTuneLevel: (v) => {
+    params.voiceTune = v;
+  },
   hit: (vel, bright) => audio.voiceHit(vel, bright),
   bpm: () => audio.band?.bpm ?? params.tempo,
   started: () => {
@@ -457,6 +465,20 @@ let stepsSinceStatus = 0;
 function stepFrame(n: number): void {
   for (let i = 0; i < n; i++) sim.step(params);
   stepsSinceStatus += n;
+}
+
+// WebGPU solver: created in the background; the select "Wave solver" switches between it and the CPU.
+let gpuSolver: GpuSolver | null = null;
+let gpuState = "WebGPU: starting";
+void GpuSolver.create().then((g) => {
+  gpuSolver = g;
+  gpuState = g ? `WebGPU ready (${g.adapterInfo})` : "no WebGPU (CPU solver)";
+});
+function syncSolver(): void {
+  const want = params.solver === "gpu" && gpuSolver !== null && !gpuSolver.lost;
+  if (want && gpuSolver && sim.solver !== "gpu") sim.attachGpu(gpuSolver);
+  else if (!want && sim.solver === "gpu") sim.detachGpu();
+  if (gpuSolver?.lost && gpuState.startsWith("WebGPU ready")) gpuState = `WebGPU lost (${gpuSolver.error}), CPU solver`;
 }
 
 let lastFrame = performance.now();
@@ -602,6 +624,8 @@ function tick(): void {
     accumulator -= n;
     stepFrame(n);
   }
+  syncSolver();
+  sim.flushGpu(params);
   frame++;
   if (frame % 2 === 0) {
     sim.observe(params, Math.min(0.2, (nowMs - lastObserve) / 1000));
@@ -647,7 +671,7 @@ function tick(): void {
   const now = performance.now();
   if (now - lastStatus > 500) {
     const sps = (stepsSinceStatus * 1000) / (now - lastStatus);
-    const gpu = "gpu" in navigator ? "WebGPU available (CPU solver in use)" : "no WebGPU (CPU solver)";
+    const gpu = `${sim.solver === "gpu" ? "GPU solver" : "CPU solver"} · ${gpuState}`;
     $("status").textContent = `${params.dimension}D tanks · ${sim.size} cells/layer · ${sps.toFixed(0)} steps/s · t=${sim.t} · ${gpu}`;
     lastStatus = now;
     stepsSinceStatus = 0;
@@ -674,4 +698,5 @@ select(selected);
 syncToolbar();
 fire(7);
 fire(8);
+if (location.search.includes("debug")) (window as unknown as { __eftelaing: unknown }).__eftelaing = { sim, params, audio };
 requestAnimationFrame(tick);

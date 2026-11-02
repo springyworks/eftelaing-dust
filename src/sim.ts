@@ -1,5 +1,6 @@
 // Coupled wave-field simulation: one n-dimensional "ripple tank" per OSI+ layer.
 
+import { MAX_OPS, type GpuOp, type GpuSolver } from "./gpu";
 import { NUM_LAYERS, NUM_LEVELS, clamp, defaultMapping, type Dimension, type Params } from "./model";
 
 const GRID: Record<Dimension, readonly [number, number, number]> = {
@@ -92,6 +93,12 @@ export class Simulation {
   private corr: Float32Array[] = [];
   private pastBeds: Float32Array[][] = [];
 
+  // GPU solver (see gpu.ts): while attached, the fields live on the GPU and u/v are a mirror that arrives a frame or two late.
+  private gpu: GpuSolver | null = null;
+  private gpuOps: GpuOp[] = [];
+  private gpuSteps = 0;
+  private gpuParams: Params | null = null;
+
   private painPos: Vec3 = [0.5, 0.5, 0.5];
   private painUntil = 0;
 
@@ -117,6 +124,50 @@ export class Simulation {
     this.pastBeds = [];
     this.rms.fill(0);
     this.stability.fill(1);
+    this.gpuOps = [];
+    this.gpuSteps = 0;
+    this.gpu?.configure(this.nx, this.ny, this.nz);
+    this.gpu?.upload(this.u, this.v);
+    this.gpu?.setMirror(this.u, this.v);
+  }
+
+  get solver(): "gpu" | "cpu" {
+    return this.gpu ? "gpu" : "cpu";
+  }
+
+  /** Moves the solving of the wave fields to the GPU. The CPU keeps a mirror of u and v for everything that reads them. */
+  attachGpu(g: GpuSolver): void {
+    this.gpu = g;
+    g.configure(this.nx, this.ny, this.nz);
+    g.upload(this.u, this.v);
+    g.setMirror(this.u, this.v);
+    this.gpuOps = [];
+    this.gpuSteps = 0;
+  }
+
+  /** Back to the CPU solver; the mirror (at most a couple of frames old) becomes the truth. */
+  detachGpu(): void {
+    this.gpu = null;
+    this.gpuOps = [];
+    this.gpuSteps = 0;
+  }
+
+  private pushOp(op: Omit<GpuOp, "step">): void {
+    if (this.gpuOps.length < MAX_OPS) this.gpuOps.push({ ...op, step: this.gpuSteps });
+  }
+
+  /** Sends this frame's steps and finger writes to the GPU. Call once per animation frame. A lost device falls back to the CPU. */
+  flushGpu(p: Params): void {
+    const g = this.gpu;
+    if (!g) return;
+    if (g.lost) {
+      this.detachGpu();
+      return;
+    }
+    const co = this.coefficients(this.gpuParams ?? p);
+    g.run({ ops: this.gpuOps, steps: this.gpuSteps, layer: co.layer, kCtx: co.kCtx, cscale: this.cscale, cpl: this.cpl, ctx: this.ctx });
+    this.gpuOps = [];
+    this.gpuSteps = 0;
   }
 
   // Levels the sand of one layer (or all): same mass, flat surface.
@@ -303,6 +354,9 @@ export class Simulation {
       this.energy[l]?.fill(0);
     }
     this.t = 0;
+    this.gpuOps = [];
+    this.gpuSteps = 0;
+    this.gpu?.upload(this.u, this.v);
   }
 
   omega(layer: number): number {
@@ -314,7 +368,7 @@ export class Simulation {
   }
 
   // Adds a gaussian bump around a normalised position into the given field.
-  private bump(field: Float32Array, pos: Vec3, sigma: number, amp: number): void {
+  private bump(layer: number, isV: boolean, pos: Vec3, sigma: number, amp: number): void {
     const { nx, ny, nz } = this;
     const cx = pos[0] * (nx - 1);
     const cy = ny > 1 ? pos[1] * (ny - 1) : 0;
@@ -327,6 +381,12 @@ export class Simulation {
     const y1 = Math.min(ny > 1 ? ny - 2 : 0, Math.ceil(cy + r));
     const z0 = Math.max(nz > 1 ? 1 : 0, Math.floor(cz - r));
     const z1 = Math.min(nz > 1 ? nz - 2 : 0, Math.ceil(cz + r));
+    if (this.gpu) {
+      this.pushOp({ layer, isV, kind: 0, amp, cx, cy, cz, inv, x0, x1, y0, y1, z0, z1 });
+      return;
+    }
+    const field = isV ? this.v[layer] : this.u[layer];
+    if (!field) return;
     for (let z = z0; z <= z1; z++) {
       for (let y = y0; y <= y1; y++) {
         for (let x = x0; x <= x1; x++) {
@@ -341,14 +401,12 @@ export class Simulation {
   // Strikes a layer: a displacement bump plus an outgoing velocity kick.
   fire(layer: number, pos?: Vec3, amp = 1): void {
     const p: Vec3 = pos ?? [0.2 + 0.6 * Math.random(), 0.2 + 0.6 * Math.random(), 0.2 + 0.6 * Math.random()];
-    const u = this.u[layer];
-    if (u) this.bump(u, p, this.sigma() * 1.3, amp);
+    if (this.u[layer]) this.bump(layer, false, p, this.sigma() * 1.3, amp);
   }
 
   // Finger in the water: a small gaussian dent at a normalised position, meant to be called along a drag path.
   scratch(layer: number, pos: Vec3, amp = 0.1): void {
-    const u = this.u[layer];
-    if (u) this.bump(u, pos, this.sigma() * 0.6, amp);
+    if (this.u[layer]) this.bump(layer, false, pos, this.sigma() * 0.6, amp);
   }
 
   // Reverse mapping: strike every OSI layer that a Maslow level maps to.
@@ -359,8 +417,14 @@ export class Simulation {
     }
   }
 
-  private standing(field: Float32Array, amp: number): void {
+  private standing(layer: number, amp: number): void {
     const { nx, ny, nz } = this;
+    if (this.gpu) {
+      this.pushOp({ layer, isV: true, kind: 1, amp, cx: 0, cy: 0, cz: 0, inv: 0, x0: 0, x1: 0, y0: 0, y1: 0, z0: 0, z1: 0 });
+      return;
+    }
+    const field = this.v[layer];
+    if (!field) return;
     for (let z = 0; z < nz; z++) {
       const pz = nz > 1 ? Math.sin((Math.PI * z) / (nz - 1)) : 1;
       for (let y = 0; y < ny; y++) {
@@ -377,8 +441,8 @@ export class Simulation {
     return this.dim === 1 ? 0.3 : this.dim === 2 ? 1 : 3;
   }
 
-  private kick(field: Float32Array, pos: Vec3, sigma: number, amp: number): void {
-    this.bump(field, pos, sigma, amp * this.driveGain());
+  private kick(layer: number, pos: Vec3, sigma: number, amp: number): void {
+    this.bump(layer, true, pos, sigma, amp * this.driveGain());
   }
 
   private applyDrives(p: Params): void {
@@ -388,64 +452,64 @@ export class Simulation {
     const g = this.driveGain();
 
     for (let l = 0; l < 7; l++) {
-      const f = this.v[l];
-      if (!f || p.instrumentDrive <= 0) continue;
+      if (p.instrumentDrive <= 0) continue;
       const ph = l * 0.9;
-      this.kick(f, [0.5 + 0.28 * Math.cos(ph), 0.5 + 0.28 * Math.sin(ph), 0.5], s, p.instrumentDrive * 0.03 * Math.sin(this.omega(l) * t));
+      this.kick(l, [0.5 + 0.28 * Math.cos(ph), 0.5 + 0.28 * Math.sin(ph), 0.5], s, p.instrumentDrive * 0.03 * Math.sin(this.omega(l) * t));
     }
 
-    const player = this.v[7];
-    if (player && p.playerActivity > 0) {
+    if (p.playerActivity > 0) {
       const w = this.omega(7);
       const a = p.playerActivity * 0.04 * Math.sin(w * t);
-      this.kick(player, [0.5 + 0.3 * Math.cos(0.004 * t), 0.5 + 0.3 * Math.sin(0.004 * t), 0.5], s, a);
-      this.kick(player, [0.5 - 0.3 * Math.cos(0.004 * t), 0.5 - 0.3 * Math.sin(0.004 * t), 0.5], s, -a);
+      this.kick(7, [0.5 + 0.3 * Math.cos(0.004 * t), 0.5 + 0.3 * Math.sin(0.004 * t), 0.5], s, a);
+      this.kick(7, [0.5 - 0.3 * Math.cos(0.004 * t), 0.5 - 0.3 * Math.sin(0.004 * t), 0.5], s, -a);
     }
 
-    const director = this.v[9];
-    if (director && p.directorIntent > 0) {
+    if (p.directorIntent > 0) {
       const phrase = 0.5 + 0.5 * Math.sin(0.002 * t);
-      this.kick(director, [0.5, 0.5, 0.5], s * 1.4, p.directorIntent * 0.05 * phrase * Math.sin(this.omega(9) * t));
+      this.kick(9, [0.5, 0.5, 0.5], s * 1.4, p.directorIntent * 0.05 * phrase * Math.sin(this.omega(9) * t));
     }
 
-    const mind = this.v[8];
-    if (mind) {
+    // The Mind (L9): pain, delight, interest, curiosity, ecstasy.
+    {
       const w = this.omega(8);
       if (p.pain > 0) {
         if (t >= this.painUntil) {
           this.painPos = [0.15 + 0.7 * Math.random(), 0.15 + 0.7 * Math.random(), 0.15 + 0.7 * Math.random()];
           this.painUntil = t + 25 + Math.random() * 40;
         }
-        this.kick(mind, this.painPos, s * 0.7, p.pain * 0.3 * Math.sin(w * 2.4 * t));
+        this.kick(8, this.painPos, s * 0.7, p.pain * 0.3 * Math.sin(w * 2.4 * t));
       }
-      if (p.delight > 0) this.kick(mind, [0.5, 0.5, 0.5], s * 1.6, p.delight * 0.08 * Math.sin(w * t));
-      if (p.interest > 0) this.kick(mind, [0.7, 0.35, 0.5], s * 0.9, p.interest * 0.08 * Math.sin(w * 0.5 * t));
+      if (p.delight > 0) this.kick(8, [0.5, 0.5, 0.5], s * 1.6, p.delight * 0.08 * Math.sin(w * t));
+      if (p.interest > 0) this.kick(8, [0.7, 0.35, 0.5], s * 0.9, p.interest * 0.08 * Math.sin(w * 0.5 * t));
       if (p.curiosity > 0) {
         const pos: Vec3 = [0.5 + 0.35 * Math.sin(0.011 * t), 0.5 + 0.35 * Math.sin(0.017 * t + 1), 0.5 + 0.3 * Math.sin(0.007 * t + 2)];
-        this.kick(mind, pos, s, p.curiosity * 0.06 * Math.sin(w * 1.5 * t));
+        this.kick(8, pos, s, p.curiosity * 0.06 * Math.sin(w * 1.5 * t));
       }
-      if (p.ecstasy > 0) this.standing(mind, g * p.ecstasy * 0.03 * Math.sin(w * t) * (0.6 + 0.4 * Math.sin(0.003 * t)));
+      if (p.ecstasy > 0) this.standing(8, g * p.ecstasy * 0.03 * Math.sin(w * t) * (0.6 + 0.4 * Math.sin(0.003 * t)));
     }
 
     // Dust is injected only at the Director (L10); lower layers receive it through top-down coupling.
-    const top = this.v[NUM_LAYERS - 1];
-    if (top && p.dust > 0) {
+    if (p.dust > 0) {
       const sprinkles = Math.max(1, Math.round(p.dust * 24));
       const gain = g * p.dust * 0.12 * (1 + psy);
       for (let k = 0; k < sprinkles; k++) {
         const i = (Math.random() * this.size) | 0;
-        top[i] = (top[i] ?? 0) + gain * gauss();
+        if (this.gpu) {
+          this.pushOp({ layer: NUM_LAYERS - 1, isV: true, kind: 2, amp: gain * gauss(), cx: 0, cy: 0, cz: 0, inv: i, x0: 0, x1: 0, y0: 0, y1: 0, z0: 0, z1: 0 });
+        } else {
+          const top = this.v[NUM_LAYERS - 1];
+          if (top) top[i] = (top[i] ?? 0) + gain * gauss();
+        }
       }
     }
 
     // Maslow -> OSI: unmet needs push the under-active layers they map to.
     if (p.reverseGain > 0) {
       for (let l = 0; l < NUM_LAYERS; l++) {
-        const f = this.v[l];
         const need = this.layerNeed(l);
-        if (!f || need < 0.02 || (this.rms[l] ?? 0) > TARGET_RMS * 1.3) continue;
+        if (need < 0.02 || (this.rms[l] ?? 0) > TARGET_RMS * 1.3) continue;
         const ph = l * 0.9 + 0.5;
-        this.kick(f, [0.5 + 0.25 * Math.cos(ph), 0.5 + 0.25 * Math.sin(ph), 0.5], s, p.reverseGain * 0.05 * need * Math.sin(this.omega(l) * t));
+        this.kick(l, [0.5 + 0.25 * Math.cos(ph), 0.5 + 0.25 * Math.sin(ph), 0.5], s, p.reverseGain * 0.05 * need * Math.sin(this.omega(l) * t));
       }
     }
   }
@@ -598,8 +662,51 @@ export class Simulation {
     }
   }
 
+  /**
+   * Per-layer constants of one step: c2, gamma, ks, kU, kD, then flags for the sand scale and the two sand couplings.
+   * Up/down couplings are made energy-consistent (geometric layer masses) by bounding their ratio; a fully one-way chain
+   * would be an active, runaway-prone system. Shared by the CPU loop and the GPU kernel.
+   */
+  private coefficients(p: Params): { layer: Float32Array; kCtx: number } {
+    const nAxes = (this.nx > 1 ? 1 : 0) + (this.ny > 1 ? 1 : 0) + (this.nz > 1 ? 1 : 0);
+    const psy = p.psychedelic;
+    const upRaw = 0.02 * p.couplingUp ** 2 * (1 + 3 * psy);
+    const downRaw = 0.02 * p.couplingDown ** 2 * (1 + 3 * psy);
+    const hi = Math.max(upRaw, downRaw);
+    const kUp = Math.min(MAX_COUPLING, Math.max(upRaw, hi * 0.5));
+    const kDown = Math.min(MAX_COUPLING, Math.max(downRaw, hi * 0.5));
+    const stab = p.stabilization * (1 - 0.7 * psy);
+    const out = new Float32Array(NUM_LAYERS * 8);
+    for (let l = 0; l < NUM_LAYERS; l++) {
+      const sPrev = l === 0 ? 1 : this.stability[l - 1] ?? 1;
+      const cf = 0.3 + 0.3 * (l / (NUM_LAYERS - 1));
+      const gu = this.memory === "sand" ? 1 : this.gain[l - 1] ?? 1;
+      const gd = this.memory === "sand" ? 1 : this.gain[l] ?? 1;
+      const o = l * 8;
+      out[o] = (cf * cf) / nAxes;
+      out[o + 1] = p.damping + stab * 0.03 * sPrev;
+      out[o + 2] = stab * 0.004 * sPrev;
+      out[o + 3] = l > 0 ? Math.min(MAX_LEARNED, kUp * gu) : 0;
+      out[o + 4] = l < NUM_LAYERS - 1 ? Math.min(MAX_LEARNED, kDown * gd) : 0;
+      out[o + 5] = p.sandDepth > 0 ? 1 : 0;
+      out[o + 6] = this.memory !== "gain" && l > 0 ? 1 : 0;
+      out[o + 7] = this.memory !== "gain" && l < NUM_LAYERS - 1 ? 1 : 0;
+    }
+    return { layer: out, kCtx: 0.03 * psy };
+  }
+
   step(p: Params): void {
     this.applyDrives(p);
+    if (this.gpu) {
+      this.gpuParams = p;
+      this.gpuSteps++;
+      this.t += 1;
+      if (++this.sandPhase >= SAND_EVERY) {
+        this.sandPhase = 0;
+        this.sandStep(p);
+      }
+      return;
+    }
 
     const { nx, ny, nz } = this;
     const sx = 1;
@@ -614,18 +721,7 @@ export class Simulation {
     const hasX = nx > 1;
     const hasY = ny > 1;
     const hasZ = nz > 1;
-    const nAxes = (hasX ? 1 : 0) + (hasY ? 1 : 0) + (hasZ ? 1 : 0);
-
-    const psy = p.psychedelic;
-    // Up/down couplings are made energy-consistent (geometric layer masses) by bounding their ratio;
-    // a fully one-way chain would be an active, runaway-prone system.
-    const upRaw = 0.02 * p.couplingUp ** 2 * (1 + 3 * psy);
-    const downRaw = 0.02 * p.couplingDown ** 2 * (1 + 3 * psy);
-    const hi = Math.max(upRaw, downRaw);
-    const kUp = Math.min(MAX_COUPLING, Math.max(upRaw, hi * 0.5));
-    const kDown = Math.min(MAX_COUPLING, Math.max(downRaw, hi * 0.5));
-    const kCtx = 0.03 * psy;
-    const stab = p.stabilization * (1 - 0.7 * psy);
+    const { layer: co, kCtx } = this.coefficients(p);
     const ctx = this.ctx;
 
     for (let l = 0; l < NUM_LAYERS; l++) {
@@ -634,18 +730,14 @@ export class Simulation {
       if (!u || !v) continue;
       const below = l > 0 ? this.u[l - 1] : undefined;
       const above = l < NUM_LAYERS - 1 ? this.u[l + 1] : undefined;
-      const sPrev = l === 0 ? 1 : this.stability[l - 1] ?? 1;
-      const cf = 0.3 + 0.3 * (l / (NUM_LAYERS - 1));
-      const c2 = (cf * cf) / nAxes;
-      const cs = p.sandDepth > 0 ? this.cscale[l] : undefined;
-      const gu = this.memory === "sand" ? 1 : this.gain[l - 1] ?? 1;
-      const gd = this.memory === "sand" ? 1 : this.gain[l] ?? 1;
-      const kU = l > 0 ? Math.min(MAX_LEARNED, kUp * gu) : 0;
-      const kD = l < NUM_LAYERS - 1 ? Math.min(MAX_LEARNED, kDown * gd) : 0;
-      const cplU = this.memory !== "gain" && l > 0 ? this.cpl[l - 1] : undefined;
-      const cplD = this.memory !== "gain" && l < NUM_LAYERS - 1 ? this.cpl[l] : undefined;
-      const gamma = p.damping + stab * 0.03 * sPrev;
-      const ks = stab * 0.004 * sPrev;
+      const c2 = co[l * 8] ?? 0;
+      const gamma = co[l * 8 + 1] ?? 0;
+      const ks = co[l * 8 + 2] ?? 0;
+      const kU = co[l * 8 + 3] ?? 0;
+      const kD = co[l * 8 + 4] ?? 0;
+      const cs = co[l * 8 + 5] ? this.cscale[l] : undefined;
+      const cplU = co[l * 8 + 6] ? this.cpl[l - 1] : undefined;
+      const cplD = co[l * 8 + 7] ? this.cpl[l] : undefined;
 
       for (let z = z0; z < z1; z++) {
         for (let y = y0; y < y1; y++) {

@@ -1,6 +1,6 @@
 // Control panel construction with per-control help popups.
 
-import type { AudioMode, BandStyle, ContextMode, MidiOut, Dimension, ListenMode, MatrixView, Params, Projection, SpatialMode } from "./model";
+import type { AudioMode, BandStyle, ContextMode, MidiOut, Dimension, ListenMode, MatrixView, Params, Projection, SolverMode, SpatialMode } from "./model";
 
 export type NumKey = Exclude<{ [K in keyof Params]: Params[K] extends number ? K : never }[keyof Params], "dimension">;
 
@@ -16,7 +16,7 @@ export interface SliderSpec {
 
 interface SelectSpec {
   readonly kind: "select";
-  readonly key: "dimension" | "context" | "listen" | "matrixView" | "projection" | "spatial" | "audioMode" | "midiOut" | "bandStyle";
+  readonly key: "dimension" | "context" | "listen" | "matrixView" | "projection" | "spatial" | "audioMode" | "solver" | "midiOut" | "bandStyle";
   readonly label: string;
   readonly options: readonly { value: string; text: string }[];
   readonly help: string;
@@ -171,6 +171,16 @@ const GROUPS: readonly Group[] = [
           { value: "both", text: "Raw FM + internal music together" },
         ],
         help: "1: the original FM audification: every layer is a voice and spikes pluck it, the nervous sound for inspecting the system. 2: the whole ten-layer brain plays the jazz band (layer 1 as rhythm section, the others as choir, melody and conductor) on the MIDI-style synthesiser. 3: only layer 1 (Physical) plays the synthesiser. Every voice sits at its own HRTF position in the scene.",
+      },
+      {
+        kind: "select",
+        key: "solver",
+        label: "Wave solver",
+        options: [
+          { value: "gpu", text: "WebGPU (all ten tanks on the graphics card)" },
+          { value: "cpu", text: "CPU (JavaScript)" },
+        ],
+        help: "Where the ten wave tanks are calculated. WebGPU runs every layer in parallel on the graphics card and leaves the CPU for the band and the screen; the picture and the sand follow one or two frames behind (a few hundredths of a second). Without WebGPU, or if the device is lost, the CPU solver takes over by itself.",
       },
       { kind: "slider", key: "rawLevel", label: "Raw FM level", min: 0, max: 1.5, step: 0.01, help: "Loudness of the raw FM voices (modes 1 and Raw + music)." },
       { kind: "slider", key: "bandLevel", label: "Band level (MIDI synth master)", min: 0, max: 1.5, step: 0.01, help: "Loudness of the whole MIDI band and choir (modes 2, 3 and Raw + music)." },
@@ -352,6 +362,8 @@ export function buildControls(root: HTMLElement, params: Params, onDimension: (d
             params.spatial = select.value as SpatialMode;
           } else if (spec.key === "audioMode") {
             params.audioMode = select.value as AudioMode;
+          } else if (spec.key === "solver") {
+            params.solver = select.value as SolverMode;
           } else if (spec.key === "midiOut") {
             params.midiOut = select.value as MidiOut;
           } else if (spec.key === "bandStyle") {

@@ -56,6 +56,7 @@ export type ContextMode = "rest" | "meditation" | "music" | "movie";
 export type Dimension = 1 | 2 | 3;
 export type Projection = "wave" | "sand" | "both" | "iso" | "profile";
 export type SpatialMode = "stereo" | "binaural";
+export type SolverMode = "gpu" | "cpu";
 export type AudioMode = "raw" | "brain" | "layer1" | "both";
 export type MidiOut = "off" | "on";
 export type BandStyle = "auto" | "swing" | "bebop" | "fusion" | "funk" | "bossa" | "baroque";
@@ -114,6 +115,8 @@ export interface Params {
   bandGroove: number; // ghost notes, syncopation, anticipations and 16th-note hat work in bass, drums and keys
   bandLearn: number; // learning rate of the brain's personality (0 = it stays as it is)
   bandEvolve: number; // how fast the riff vocabulary evolves while the band plays (0 = frozen)
+  solver: SolverMode; // where the wave tanks are solved: the GPU (WebGPU) or the CPU
+  voiceTune: number; // auto-tuner for the microphone: how hard a sung note is pulled to the chord (colour relaxes it)
   beatDrive: number; // how strongly the beat lattice pulses the ten tanks (0 = the beat is only displayed)
   midiOut: MidiOut; // also send the band as MIDI to the first Web MIDI output
   swing: number; // 0 = plucks sound immediately, >0 = quantised to a swung eighth-note grid
@@ -175,11 +178,13 @@ export const DEFAULT_PARAMS: Params = {
   bandGroove: 0.6,
   bandLearn: 0.5,
   bandEvolve: 0.5,
+  solver: "gpu",
+  voiceTune: 0.6,
   beatDrive: 0.3,
 };
 
 // Settings that describe how the human sees and hears the instrument; scenarios leave them alone.
-export const PRESENTATION_KEYS = ["volume", "alcCeiling", "listen", "fmDepth", "spikeSens", "projection", "spatial", "width", "reverb", "jazz", "swing", "audioMode", "tempo", "midiOut", "bandBrain", "rawLevel", "bandLevel", "bandDensity", "bandChoir", "bandBass", "bandKeys", "bandLead", "bandDrums", "bandVariation", "bandHuman", "bandSwitch", "bandColor", "bandStyle", "bandRiffs", "bandGroove", "bandLearn", "bandEvolve", "beatDrive", "matrixView"] as const;
+export const PRESENTATION_KEYS = ["volume", "alcCeiling", "listen", "fmDepth", "spikeSens", "projection", "spatial", "width", "reverb", "jazz", "swing", "audioMode", "tempo", "midiOut", "bandBrain", "rawLevel", "bandLevel", "bandDensity", "bandChoir", "bandBass", "bandKeys", "bandLead", "bandDrums", "bandVariation", "bandHuman", "bandSwitch", "bandColor", "bandStyle", "bandRiffs", "bandGroove", "bandLearn", "bandEvolve", "beatDrive", "voiceTune", "solver", "matrixView"] as const;
 
 export interface Scenario {
   readonly id: string;

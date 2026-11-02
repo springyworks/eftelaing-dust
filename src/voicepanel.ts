@@ -5,6 +5,7 @@
 
 import type { BeatLattice, Groove } from "./beat";
 import type { Tesseract } from "./tesseract";
+import { strictness, tuneNote, type TuneChord } from "./tuner";
 import { TempoTracker, VoiceInput, type VoiceEvent, type VoiceFrame } from "./voice";
 
 /** Onset detection takes about this long; the sound happened this much before the event arrived. */
@@ -25,6 +26,12 @@ export interface VoiceDeps {
   /** Strikes layer 1 at a normalised position. */
   strike(x: number, y: number, amp: number): void;
   note(midi: number, vel: number, monitor: boolean): void;
+  /** The chord the band plays now. */
+  chord(): TuneChord & { name: string };
+  /** Harmonic colour 0..1 (sweet to tense): the jazzier, the more relaxed the tuner. */
+  colour(): number;
+  tuneLevel(): number;
+  setTuneLevel(v: number): void;
   hit(vel: number, bright: number): void;
   bpm(): number;
   /** The machine beat as heard `ago` seconds before now. */
@@ -89,7 +96,17 @@ export function buildVoicePanel(root: HTMLElement, deps: VoiceDeps): VoicePanel 
   sens.step = "0.1";
   sens.value = "1";
   sensLabel.append(sens);
-  row.append(mic, monitor.label, follow.label, sensLabel);
+  const tuneLabel = el("label", "voice-opt", "tune-in ");
+  const tune = el("input");
+  tune.type = "range";
+  tune.min = "0";
+  tune.max = "1";
+  tune.step = "0.01";
+  tune.value = String(deps.tuneLevel());
+  tune.title = "Auto-tuner: pulls what you sing to the chord and riff that play now. 0 = raw, 1 = strictly chord tones. The jazzier (harmonic colour) the band, the more relaxed it is: tensions and passing notes stay.";
+  tuneLabel.append(tune);
+  const tuneRead = el("div", "voice-read", "Auto-tuner: waiting for a note.");
+  row.append(mic, monitor.label, follow.label, sensLabel, tuneLabel);
   const read = el("div", "voice-read", "Microphone off. Use headphones: the band would otherwise be heard by the microphone. Sing or hum single notes, say \"ta ta\" (short notes are staccato), or blow \"pfff\" / \"tss\" for drum sticks. Follow the beat cue below.");
   const cue = canvasOf(360, 52, "Beat cue and timing meter");
   const timing = el("div", "voice-read");
@@ -97,7 +114,7 @@ export function buildVoicePanel(root: HTMLElement, deps: VoiceDeps): VoicePanel 
   const meta = el("div", "voice-read");
   const cube = canvasOf(360, 110, "Four-dimensional view: layers over time");
   const cubeMeta = el("div", "voice-read");
-  root.append(row, read, cue, timing, lattice, meta, cube, cubeMeta);
+  root.append(row, read, tuneRead, cue, timing, lattice, meta, cube, cubeMeta);
 
   let last = "";
   const onEvent = (e: VoiceEvent): void => {
@@ -107,9 +124,11 @@ export function buildVoicePanel(root: HTMLElement, deps: VoiceDeps): VoicePanel 
     }
     if (e.kind === "on") {
       counts.notes++;
-      deps.strike(clamp01(0.1 + (0.8 * (e.midi - 36)) / 48), 0.1 + 0.8 * (((e.midi % 12) + 12) % 12) / 12, 0.5 + (0.9 * e.vel) / 127);
-      deps.note(e.midi, e.vel, monitor.box.checked);
-      last = `note ${noteName(e.midi)} (vel ${e.vel})`;
+      const t = tuneNote(e.midi, deps.chord(), deps.tuneLevel(), deps.colour());
+      deps.strike(clamp01(0.1 + (0.8 * (t.midi - 36)) / 48), 0.1 + 0.8 * (((t.midi % 12) + 12) % 12) / 12, 0.5 + (0.9 * e.vel) / 127);
+      deps.note(t.midi, e.vel, monitor.box.checked);
+      last = `note ${noteName(e.midi)}${t.shift !== 0 ? ` → ${noteName(t.midi)}` : ""} (vel ${e.vel})`;
+      tuneRead.textContent = `Auto-tuner on ${deps.chord().name}: you sang ${noteName(e.midi)}, the band hears ${noteName(t.midi)} (${t.kind === "chord" ? "chord tone" : t.kind === "scale" ? "scale tone / tension" : "passing note"}${t.shift !== 0 ? `, pulled ${t.shift > 0 ? "+" : ""}${t.shift} semitone${Math.abs(t.shift) > 1 ? "s" : ""}` : ", left as it was"}). Strictness ${(strictness(deps.tuneLevel(), deps.colour()) * 100).toFixed(0)}%.`;
     } else {
       counts.hits++;
       deps.strike(0.5 + 0.7 * (e.bright - 0.5), 0.5, 0.5 + (0.9 * e.vel) / 127);
@@ -131,11 +150,13 @@ export function buildVoicePanel(root: HTMLElement, deps: VoiceDeps): VoicePanel 
     const now = performance.now();
     if (f.state === "voiced" && f.midiNote >= 0 && now - lastHold > 140) {
       lastHold = now; // a held note keeps the bottom tank excited at its place
-      deps.strike(clamp01(0.1 + (0.8 * (f.midi - 36)) / 48), 0.1 + 0.8 * (((f.midiNote % 12) + 12) % 12) / 12, 0.1 + 2 * f.level);
+      const held = tuneNote(f.midiNote, deps.chord(), deps.tuneLevel(), deps.colour()).midi;
+      deps.strike(clamp01(0.1 + (0.8 * (held - 36)) / 48), 0.1 + 0.8 * (((held % 12) + 12) % 12) / 12, 0.1 + 2 * f.level);
     }
+    const goal = f.hz > 0 && f.midiNote >= 0 ? tuneNote(f.midiNote, deps.chord(), deps.tuneLevel(), deps.colour()).midi : null;
     const cents = f.hz > 0 ? Math.round((f.midi - Math.round(f.midi)) * 100) : 0;
     const bar = "█".repeat(Math.round(clamp01((f.db + 60) / 60) * 12)).padEnd(12, "░");
-    read.textContent = `${bar} ${f.state === "voiced" ? `${noteName(f.midiNote)} ${f.hz.toFixed(0)} Hz ${cents >= 0 ? "+" : ""}${cents} cents` : f.state === "noise" ? "burst" : f.level > 0.01 ? "listening" : "quiet"} · last: ${last || "-"}`;
+    read.textContent = `${bar} ${f.state === "voiced" ? `${noteName(f.midiNote)}${goal !== null && goal !== f.midiNote ? `→${noteName(goal)}` : ""} ${f.hz.toFixed(0)} Hz ${cents >= 0 ? "+" : ""}${cents} cents` : f.state === "noise" ? "burst" : f.level > 0.01 ? "listening" : "quiet"} · last: ${last || "-"}`;
   };
 
   mic.addEventListener("click", () => {
@@ -160,6 +181,7 @@ export function buildVoicePanel(root: HTMLElement, deps: VoiceDeps): VoicePanel 
         read.textContent = `No microphone: ${e instanceof Error ? e.message : "refused"}. The page needs https or localhost and your permission.`;
       });
   });
+  tune.addEventListener("input", () => deps.setTuneLevel(Number(tune.value)));
   sens.addEventListener("input", () => {
     if (voice.analyzer) voice.analyzer.gateScale = Number(sens.value);
   });

@@ -418,6 +418,11 @@ export class Band {
   }
 
   /** The human voice as a note (voice2midi): played at once on the lead when `monitor` is set, and answered by the brain a few grid slots later. */
+  /** The chord that is playing now (for the voice auto-tuner). */
+  chordNow(): Chord {
+    return this.cur;
+  }
+
   voiceNote(midi: number, vel: number, monitor: boolean): void {
     if (monitor) this.leadNote(this.ctx.currentTime + 0.01, midi, vel, 0.5);
     if (this.sung.length < 8) this.sung.push(midi);
