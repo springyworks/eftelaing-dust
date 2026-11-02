@@ -207,7 +207,9 @@ export class Band {
   patchInfo = "";
   // Characters typed into layer 1, and the brain's answers queued for later grid slots.
   private typed: { code: number }[] = [];
-  private echoes: { step: number; kind: "layer" | "stab"; code: number }[] = [];
+  private echoes: { step: number; kind: "layer" | "stab"; code: number; midi?: number }[] = [];
+  // Notes sung into the microphone that the brain has not answered yet.
+  private sung: number[] = [];
   echoInfo = "";
   private pitchHz: ArrayLike<number> = [];
   private midi: MidiOut | null = null;
@@ -397,6 +399,34 @@ export class Band {
   /** A character typed into layer 1: the band plays it on the next grid slot and the brain answers a few slots later. */
   type(code: number): void {
     if (this.typed.length < 16) this.typed.push({ code });
+  }
+
+  /** The human voice as a note (voice2midi): played at once on the lead when `monitor` is set, and answered by the brain a few grid slots later. */
+  voiceNote(midi: number, vel: number, monitor: boolean): void {
+    if (monitor) this.leadNote(this.ctx.currentTime + 0.01, midi, vel, 0.5);
+    if (this.sung.length < 8) this.sung.push(midi);
+  }
+
+  /** An unpitched burst of the voice ("pfff", "tss", "k"): a drum stick, played at once, brighter bursts are higher and drier. */
+  voiceHit(vel: number, bright: number): void {
+    const t = this.ctx.currentTime + 0.005;
+    vel = Math.round(vel * Math.max(this.lv.ride, 0.5));
+    this.send(CH.drums, 37, vel, t, 0.08);
+    this.heard("ride", vel, 0.3);
+    const dest = this.spat.ride.input;
+    this.noiseBurst(t, dest, 3200 + 3000 * bright, (0.34 * vel) / 127, 0.025);
+    this.noiseBurst(t, dest, 900, (0.22 * vel) / 127, 0.05, 1500 + 1800 * bright);
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    o.type = "triangle";
+    o.frequency.setValueAtTime(1100 + 900 * bright, t);
+    o.frequency.exponentialRampToValueAtTime(700 + 400 * bright, t + 0.03);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime((0.2 * vel) / 127, t + 0.001);
+    g.gain.exponentialRampToValueAtTime(0.0005, t + 0.045);
+    o.connect(g).connect(dest);
+    o.start(t);
+    o.stop(t + 0.06);
   }
 
   /**
@@ -1055,13 +1085,19 @@ export class Band {
     const accents = this.accents;
     this.accents = [];
     const typed = this.typed.shift();
+    const sung = this.sung.shift();
     if (silent) {
+      this.sung = [];
       this.typed = [];
       this.echoes = [];
       return;
     }
 
     const cur = this.cur;
+    if (sung !== undefined) {
+      this.echoes.push({ step: this.step + 2, kind: "layer", code: 0, midi: sung }, { step: this.step + 5, kind: "stab", code: 0 });
+      this.echoInfo = `heard you sing ${sung}`;
+    }
     // Typing into layer 1: the typed character is played at once as a note of the current scale (the same letter is always
     // the same scale degree), then the brain answers: the loudest layer sings it back three slots later, a keys stab follows.
     if (typed) {
@@ -1082,10 +1118,10 @@ export class Band {
             l = i;
           }
         }
-        const n = this.layerNote(l, cur, f);
+        const n = e.midi !== undefined ? this.snapChord(e.midi + (this.q(2) < 0.5 ? 2 : -3), cur) : this.layerNote(l, cur, f);
         if (this.lv.choir >= 0.05) this.choirNote(l, t, n, 74, stepLen * 4);
         else this.leadNote(t, n - 12, 56, stepLen * 2.5);
-        this.echoInfo = `brain answers with L${l + 1} (note ${n})`;
+        this.echoInfo = `brain answers ${e.midi !== undefined ? "your voice " : ""}with L${l + 1} (note ${n})`;
       } else {
         this.comp(t, cur.voicing.slice(-3), 62, stepLen * 2, 3);
       }

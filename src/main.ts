@@ -7,6 +7,7 @@ import { proveLearning } from "./proof";
 import { Scope, TankView } from "./render";
 import { buildQuickChat } from "./quickchat";
 import { startRemote } from "./remote";
+import { buildVoicePanel } from "./voicepanel";
 import { Stack3D } from "./stack3d";
 import { Simulation, type MemoryMode, type Vec3 } from "./sim";
 import { buildControls, helpButton, hideHelp, showHelp } from "./ui";
@@ -190,6 +191,7 @@ setSnapshot(() => ({
   rms: Array.from(sim.rms, (v) => Number(v.toFixed(3))),
   stability: Array.from(sim.stability, (v) => Number(v.toFixed(3))),
   soundOn: audio.enabled,
+  voice: voicePanel.info(),
   learning: { memory: sim.memory, dopa: Number(sim.dopa.toFixed(2)), rewards: sim.rewards, links: Array.from({ length: NUM_LAYERS - 1 }, (_, l) => Number(sim.learned(l).toFixed(2))) },
 }));
 const toast = document.createElement("div");
@@ -197,7 +199,7 @@ toast.style.cssText = "position:fixed;left:50%;top:10px;transform:translateX(-50
 document.body.append(toast);
 let toastTimer = 0;
 startRemote(params, {
-  snapshot: () => ({ style: audio.band?.styleInfo ?? "", phrase: audio.band?.phraseInfo ?? "", chord: audio.chord, instruments: audio.band?.patchInfo ?? "", personality: audio.band?.personalityInfo ?? "", soundOn: audio.enabled, learning: { memory: sim.memory, dopa: Number(sim.dopa.toFixed(2)), rewards: sim.rewards } }),
+  snapshot: () => ({ style: audio.band?.styleInfo ?? "", phrase: audio.band?.phraseInfo ?? "", chord: audio.chord, instruments: audio.band?.patchInfo ?? "", personality: audio.band?.personalityInfo ?? "", soundOn: audio.enabled, voice: voicePanel.info(), learning: { memory: sim.memory, dopa: Number(sim.dopa.toFixed(2)), rewards: sim.rewards } }),
   applied: () => controls.syncAll(),
   say: (text) => {
     toast.textContent = text;
@@ -346,6 +348,20 @@ typeIn.addEventListener("keydown", (e) => {
   typeIn.value = "";
 });
 $("type-help").append(helpButton("Type into layer 1", "Every character you type is a pulse in the Physical tank (layer 1), at a place and strength set by the character. The band plays it at once as a note of the current scale (the same letter is always the same degree) in the lead instrument; three slots later the brain answers: the loudest layer sings a note back, and the keys follow with a stab. Raw FM mode plucks layer 1's own voice instead. In every audio mode you can still hear the internal MIDI doings and the raw layer FM. Enter clears the field."));
+
+const voicePanel = buildVoicePanel($("voicebox"), {
+  strike: (x, y, amp) => sim.fire(0, [x, y, 0.5], amp),
+  note: (midi, vel, monitor) => audio.voiceNote(midi, vel, monitor),
+  hit: (vel, bright) => audio.voiceHit(vel, bright),
+  bpm: () => audio.band?.bpm ?? params.tempo,
+  started: () => {
+    if (!audio.enabled) void toggleSound();
+  },
+  setTempo: (bpm) => {
+    params.tempo = Math.round(Math.min(160, Math.max(60, params.tempo + 0.4 * (bpm - params.tempo))));
+    controls.syncAll();
+  },
+});
 
 function syncToolbar(): void {
   playBtn.textContent = params.running ? "Pause" : "Play";
@@ -523,6 +539,7 @@ function drawLearning(): void {
 function tick(): void {
   const nowMs = performance.now();
   exerciser.update(Math.min(0.1, (nowMs - lastFrame) / 1000));
+  voicePanel.update(Math.min(0.1, (nowMs - lastFrame) / 1000));
   lastFrame = nowMs;
   if (params.running) {
     accumulator += params.speed;

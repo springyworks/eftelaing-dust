@@ -444,6 +444,18 @@ export class WaveMonitor {
     this.pluck(0, 2, 0.6, 2 ** ((code % 12) / 12));
   }
 
+  /** A note sung into the microphone: heard by the band (answered by the brain), optionally played at once as an instrument. */
+  voiceNote(midi: number, vel: number, monitor: boolean): void {
+    const p = this.lastParams;
+    if (this.enabled && p && p.audioMode !== "raw") this.band?.voiceNote(midi, vel, monitor);
+  }
+
+  /** An unpitched burst of the voice: a drum stick. */
+  voiceHit(vel: number, bright: number): void {
+    const p = this.lastParams;
+    if (this.enabled && p && p.audioMode !== "raw") this.band?.voiceHit(vel, bright);
+  }
+
   spectrum(canvas: HTMLCanvasElement): void {
     const c = canvas.getContext("2d");
     if (!c) return;
