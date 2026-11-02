@@ -98,6 +98,10 @@
   .ex-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:2px 14px; margin-top:10px; }
   .ex-status { font-size:12px; color:var(--dim); margin:6px 0; font-variant-numeric:tabular-nums; }
   .ex-prof { max-height:360px; overflow:auto; border-radius:6px; background:#090d13; }
+  .stack3d { width:100%; display:block; border-radius:6px; background:#090d13; cursor:grab; touch-action:none; }
+  .stack3d:active { cursor:grabbing; }
+  .stack-btns { margin-top:6px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .stack-note { font-size:11px; color:var(--dim); }
   .ex-canvas { width:100%; display:block; cursor:pointer; }
   .ex-legend { font-size:11px; color:var(--dim); padding:4px 6px; }
   .ex-legend i { display:inline-block; width:9px; height:9px; margin:0 3px 0 8px; border-radius:2px; }
@@ -183,6 +187,11 @@
     <div class="card">
       <h2>Brain learning: reward hormone <span id="learn-help"></span></h2>
       <div id="learn"></div>
+    </div>
+    <div class="card">
+      <h2>3D stack: the whole brain <span id="stack-help"></span></h2>
+      <canvas id="stack3d" class="stack3d" width="780" height="520"></canvas>
+      <div class="stack-btns"><button class="btn" id="st-iso">Isometric</button> <button class="btn" id="st-side">Side</button> <button class="btn" id="st-top">Top</button> <span class="stack-note">drag = orbit · wheel = zoom · tap a plate = select and tickle it</span></div>
     </div>
   </div>
 </main>

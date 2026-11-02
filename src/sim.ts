@@ -185,7 +185,7 @@ export class Simulation {
     const kL = p.sandLevel * 0.12;
     const delta = this.delta;
     const useSand = this.memory !== "gain";
-    if (useSand) this.updateCorrelation();
+    this.updateCorrelation(); // also feeds the 3D view, whatever the memory mode
     const attend = this.t < this.focusUntil ? this.focus : -1;
     for (let l = 0; l < NUM_LAYERS; l++) {
       const u = this.u[l];
@@ -520,6 +520,11 @@ export class Simulation {
   /** The coupling field of link l (between layer l and l+1) over the tank plane, 1 = innate. */
   couplingMap(l: number): Float32Array | undefined {
     return this.cpl[l];
+  }
+
+  /** How in-phase layer l and l+1 have recently been at each cell of the plane (-1..1). */
+  coherenceMap(l: number): Float32Array | undefined {
+    return this.corr[l];
   }
 
   /** The sand memory as bytes (one per cell, per layer), for keeping it between sessions. */

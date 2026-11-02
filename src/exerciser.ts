@@ -59,6 +59,7 @@ const HINTS = [
   { id: "wantswing", group: "Style", label: "Want swing", tip: "Teaches the brain to prefer relaxed swing with walking bass and ride", push: [] },
   { id: "wantfusion", group: "Style", label: "Want fusion", tip: "Teaches the brain to prefer fusion: 16th grooves, bursts, m11 colours", push: [] },
   { id: "wantfunk", group: "Style", label: "Want funk", tip: "Teaches the brain to prefer funk: the one, ghost notes and riffs", push: [] },
+  { id: "wantbaroque", group: "Style", label: "Want Bach", tip: "Teaches the brain to prefer baroque: a running bass, sequences along the circle of fifths, mordents, trills and a canon", push: [] },
   { id: "wantbossa", group: "Style", label: "Want bossa", tip: "Teaches the brain to prefer soft bossa", push: [] },
   { id: "jarring", group: "Form", label: "Jarring instrument change", tip: "An instrument swap does not feel musical: swap rarely", push: [["bandSwitch", -1]] },
   { id: "melody", group: "Form", label: "Melody lost", tip: "Theory: the tune is not carried, the lead should lead", push: [["bandLead", 1], ["bandChoir", -1]] },

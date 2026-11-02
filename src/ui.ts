@@ -196,6 +196,7 @@ const GROUPS: readonly Group[] = [
           { value: "fusion", text: "Fusion (16th grooves, bursts, m11 colours)" },
           { value: "funk", text: "Funk (the one, ghost notes, riffs)" },
           { value: "bossa", text: "Bossa (straight, clave, soft)" },
+          { value: "baroque", text: "Baroque (Bach: sequences, ornaments, canon)" },
         ],
         help: "Each style is a complete way of playing: swing amount, tempo, bass pattern, comping rhythm, drum groove, the kind of lead phrases and its own chord progressions. Auto lets the brain choose every eight to sixteen bars from its layers (activity, peakiness, tension, upper-layer energy) and from what you liked before. The others lock one style.",
       },

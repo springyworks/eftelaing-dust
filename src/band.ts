@@ -126,6 +126,8 @@ interface Note16 {
   n: number;
   v: number;
   len: number;
+  /** An ornament (mordent, trill) that replaces the plain note: pitch, start and length in sixteenths. */
+  orn?: readonly { n: number; at: number; len: number }[];
 }
 
 const lerp1 = (a: number, b: number, k: number): number => a + (b - a) * k;
@@ -149,6 +151,7 @@ export class Band {
   private step = 0;
   private next = 0;
   private lastBass = 38;
+  private fillRolled = false;
   private leadMidi = 69;
   private tension = 0.5;
   private accents: { layer: number; mag: number }[] = [];
@@ -182,9 +185,10 @@ export class Band {
   phraseInfo = "";
   private prog = 0;
   private styleSince = -99;
-  private lastPlayed: Record<StyleId, number> = { swing: -99, bebop: -99, fusion: -99, funk: -99, bossa: -99 };
+  private lastPlayed: Record<StyleId, number> = { swing: -99, bebop: -99, fusion: -99, funk: -99, bossa: -99, baroque: -99 };
   private fluent = 0.4;
   private phrase: Note16[] = [];
+  private prevPhrase: Note16[] = [];
   private riff: { rhythm: number; steps: number[]; left: number } | null = null;
   private bassPat = 0;
   private compPat = 0;
@@ -533,6 +537,7 @@ export class Band {
       this.compPat = this.brain.pick("comp:", CHICKEN.length, this.q(4));
       this.kickPat = this.brain.pick("kick:", KICKS.length, this.q(5));
     }
+    this.prevPhrase = this.phrase;
     this.phrase = silent ? [] : this.makePhrase(bar, f, th);
     const st = STYLES[this.style];
     this.styleInfo = `${st.name} (${this.opts.style === "auto" ? "the brain's pick" : "locked"}) · progression ${this.prog + 1}/${progressionCount(this.style)} · swing ${Math.round(this.swingNow * 100)}% · ${Math.round(this.bpm)} bpm`;
@@ -556,6 +561,7 @@ export class Band {
       fusion: 0.15 + 0.6 * upper + 0.3 * f.tension,
       funk: 0.1 + 0.8 * f.crest + 0.2 * f.d,
       bossa: 0.2 + 0.6 * (1 - f.d) + 0.2 * f.health,
+      baroque: 0.15 + 0.5 * f.health * (1 - f.crest) + 0.2 * f.d,
     };
     let best = this.style;
     let top = -Infinity;
@@ -611,7 +617,7 @@ export class Band {
     const keys = [`prog:${this.style}:${this.prog}`];
     if (st.bass === "funk") keys.push(`bass:${this.bassPat}`);
     if (st.comp === "chicken") keys.push(`comp:${this.compPat}`);
-    if (st.drums !== "swing" && st.drums !== "bossa") keys.push(`kick:${this.kickPat}`);
+    if (st.drums !== "swing" && st.drums !== "bossa" && st.drums !== "none") keys.push(`kick:${this.kickPat}`);
     if (this.riff && this.phrase.length > 0 && (st.lead === "funk" || st.lead === "fusion")) keys.push(`riff:${this.riff.rhythm}`);
     return keys;
   }
@@ -740,6 +746,40 @@ export class Band {
         out.push({ i: s.j * 2, n: s.n, v: s.v, len: Math.min(4, (nextJ - s.j) * 2) });
       });
       this.phraseInfo = `${bop ? "bebop run" : "swing line"} ${out.length} notes${odd ? " + enclosure" : ""}`;
+      return out;
+    }
+
+    if (st.lead === "baroque") {
+      // A motif of four notes (its contour read from the theme) is repeated as a sequence that steps down (up in odd bars)
+      // along the scale, the way Bach spins a figure through a bar. A practised brain decorates it with mordents, and odd
+      // bars end on a trill.
+      const pool = this.poolOf(cur.scale);
+      const base = this.nearest(pool, centre + 2 + (deg[0] ?? 0));
+      const shape = [0, 1, 2, 3].map((j) => clamp(Math.round(((deg[j * 2] ?? 0) - (deg[0] ?? 0)) / 2), -2, 2));
+      if (shape.every((x) => x === shape[0])) shape.splice(0, 4, 0, 1, 0, -1);
+      const stepDir = odd ? 1 : -1;
+      const trill = odd && this.q(9) < 0.25 + 0.6 * fl;
+      for (let rep = 0; rep < (trill ? 3 : 4); rep++) {
+        shape.forEach((sh, j) => {
+          const at = clamp(base + stepDir * rep + sh, 0, pool.length - 1);
+          const n = pool[at] ?? 69;
+          const note: Note16 = { i: rep * 4 + j, n, v: j === 0 ? 5 : -2, len: 1 };
+          if (j === 0 && this.q(10 + rep) < (0.1 + 0.4 * fl) * (0.4 + vr)) {
+            const up = pool[clamp(at + 1, 0, pool.length - 1)] ?? n + 2;
+            note.len = 2;
+            note.orn = [{ n, at: 0, len: 0.33 }, { n: up, at: 0.33, len: 0.33 }, { n, at: 0.67, len: 1.33 }];
+          }
+          out.push(note);
+        });
+      }
+      if (trill) {
+        const tgt = this.snapChord(pool[clamp(base - 2, 0, pool.length - 1)] ?? 69, next);
+        const up = pool[clamp(this.nearest(pool, tgt) + 1, 0, pool.length - 1)] ?? tgt + 2;
+        const orn: { n: number; at: number; len: number }[] = [];
+        for (let a = 0; a < 8; a++) orn.push({ n: a % 2 === 0 ? tgt : up, at: a * 0.5, len: 0.5 });
+        out.push({ i: 12, n: tgt, v: 6, len: 4, orn });
+      }
+      this.phraseInfo = `baroque sequence ${stepDir < 0 ? "down" : "up"} ${shape.join(" ")}${trill ? " + trill" : ""}${out.some((x) => x.orn && x.len === 2) ? " + mordent" : ""} · canon follows a bar later`;
       return out;
     }
 
@@ -898,6 +938,8 @@ export class Band {
       [2 * k + 1, t + stepLen * 0.5],
     ];
     const at = (tt: number, l: number, span = 1): number => Math.max(this.ctx.currentTime, tt + (this.q(l) - 0.5) * loose * span);
+    if (k === 0 && bar % 4 === 3) this.fillRolled = this.q(9) < 0.25 + 0.5 * groove * fl + 0.2 * f.d;
+    const filling = this.fillRolled && f.d > 0.05 && st.drums !== "bossa" && st.drums !== "none" && bar % 4 === 3 && k >= 6;
 
     // Walking bass: one note per beat, always from the bottom layer's activity. A practised brain approaches the next
     // downbeat chromatically and drops in skip notes between the beats.
@@ -937,6 +979,16 @@ export class Band {
       }
     }
     // Bossa bass: root on one, fifth on the "and" of two, root on three, fifth on the "and" of four.
+    // Baroque running bass: a steady line of eighths through the chord tones, the root an octave down on the downbeat.
+    if (st.bass === "arp" && f.d > 0.02) {
+      const idx = [0, 2, 1, 2, 0, 3, 1, 2][s % 8] ?? 0;
+      let n = cur.root + (cur.bass[idx] ?? 0);
+      while (n > 55) n -= 12;
+      while (n < 30) n += 12;
+      if (inChord === 0) n = Math.max(28, cur.root - 12);
+      this.lastBass = n;
+      this.bassNote(tight(0), n, vel(inChord % 8 === 0 ? 62 : 48, 22), beatDur * 0.48);
+    }
     if (st.bass === "bossa" && f.d > 0.02 && (k === 0 || k === 3 || k === 4 || k === 7)) {
       let n = cur.root + (k === 3 || k === 7 ? cur.bass[2] ?? 7 : 0);
       while (n > 52) n -= 12;
@@ -959,7 +1011,7 @@ export class Band {
     }
 
     // Funk, fusion and bossa grooves with kick and snare, played on the sixteenth grid.
-    if (f.d > 0.02 && st.drums !== "swing") {
+    if (f.d > 0.02 && st.drums !== "swing" && st.drums !== "none") {
       const kp = KICKS[this.kickPat] ?? "";
       for (const [i, tt] of subs) {
         const ghostOk = GHOST_SLOTS.includes(i) && this.q(6) < groove * (0.25 + 0.5 * fl);
@@ -972,9 +1024,23 @@ export class Band {
         const funk = st.drums === "funk";
         if (funk || !(i & 1) || this.q(1) < groove * 0.4) this.rideHit(at(tt, 1, 0.5), Math.round((i % 4 === 0 ? 40 : 24) + 22 * f.d), funk ? 0.1 : 0.35);
         if (kp[i] === "k" && (i === 0 || this.q(2) < 0.6 + 0.4 * groove)) this.kick(at(tt, 2, 0.3), Math.round(60 + 30 * f.d));
-        if (i === 4 || i === 12) this.snare(at(tt, 3, 0.3), Math.round(62 + 34 * f.d));
-        else if (ghostOk) this.snare(at(tt, 4, 0.5), Math.round(18 + 10 * f.d));
+        if ((i === 4 || i === 12) && !filling) this.snare(at(tt, 3, 0.3), Math.round(62 + 34 * f.d));
+        else if (ghostOk && !filling) this.snare(at(tt, 4, 0.5), Math.round(18 + 10 * f.d));
         if (funk && i === 14 && this.q(5) < 0.5 * groove) this.rideHit(tt, Math.round(52 + 20 * f.d), 0.9);
+      }
+    }
+
+    // A drum fill at the end of every fourth bar (not in bossa): the last two beats run in sixteenths, a crescendo around the
+    // snare and the toms, and every fill is different. The busier and more fluent the brain, the more often it fills.
+    if (filling) {
+      const toms = [50, 47, 45, 43];
+      for (const [i, tt] of subs) {
+        const n = i - 12; // 0..3 over the last two beats
+        const v = Math.round(clamp(38 + n * 14 + 28 * f.d, 1, 127));
+        const pick = Math.floor(this.q(10 + n) * 4);
+        if (pick === 0) this.snare(at(tt, 3, 0.3), v, 0.9 + 0.1 * n);
+        else if (pick === 3 && n >= 2) this.kick(at(tt, 2, 0.3), v);
+        else this.tom(at(tt, 3, 0.3), v, toms[(n + pick) % 4] ?? 45);
       }
     }
 
@@ -1023,6 +1089,16 @@ export class Band {
     if (k === 0) this.prepareBar(bar, f, false);
     const th = this.answer && k >= 5 ? this.answer : this.themeFor(bar);
     const vr = this.feel.variation * this.feel.variation; // variation 0.5 adds little, 1 reinvents the line
+    // Canon: the keys answer last bar's phrase an octave lower, fitted onto the current chord.
+    if (st.lead === "baroque" && f.d > 0.05) {
+      for (const n of this.prevPhrase) {
+        if (n.i !== 2 * k && n.i !== 2 * k + 1) continue;
+        const pool = this.poolOf(cur.scale, 40, 80);
+        const m = pool[this.nearest(pool, n.n - 12)] ?? n.n - 12;
+        const tt = n.i === 2 * k ? t : t + stepLen * 0.5;
+        this.comp(Math.max(this.ctx.currentTime, tt + 0.01), [m], Math.round(clamp(vel(40, 26) + n.v * 0.5, 1, 127)), Math.max(0.08, n.len * stepLen * 0.45), 1);
+      }
+    }
     if (this.phrase.length > 0) {
       // A written phrase (licks, runs, riffs) replaces the plain theme for this bar.
       for (const n of this.phrase) {
@@ -1031,7 +1107,9 @@ export class Band {
         const tt = n.i === 2 * k ? t : t + stepLen * 0.5;
         const swung = Math.max(this.ctx.currentTime, tt + laidBack + (this.q(2) - 0.5) * loose * 0.6);
         this.leadMidi = n.n;
-        this.leadNote(swung, n.n, Math.round(clamp(vel(52, 44) + n.v, 1, 127)), Math.max(0.06, n.len * stepLen * 0.5 * 0.9));
+        const lv = Math.round(clamp(vel(52, 44) + n.v, 1, 127));
+        if (n.orn) for (const o of n.orn) this.leadNote(swung + o.at * stepLen * 0.5, o.n, lv, Math.max(0.04, o.len * stepLen * 0.5 * 0.9));
+        else this.leadNote(swung, n.n, lv, Math.max(0.06, n.len * stepLen * 0.5 * 0.9));
       }
       return;
     }    const extra = this.q(4) < 0.3 * vr; // a slot that is not in the theme's rhythm joins in
@@ -1384,22 +1462,71 @@ export class Band {
   }
 
   /** Snare: a noise burst over a short 190 Hz body. */
-  private snare(t: number, vel: number): void {
+  /**
+   * Snare with a different character on nearly every hit: soft ghost notes are low and brushy, loud hits sometimes crack as a
+   * rimshot, medium ones now and then get a flam, and tone shifts the whole drum up or down (fills tune it).
+   */
+  private snare(t: number, vel: number, tone = 1): void {
     vel = Math.round(vel * this.lv.ride);
     if (vel < 2) return;
-    this.send(CH.drums, 38, vel, t, 0.15);
+    const ghost = vel < 30;
+    const r = Math.random();
+    const rimshot = !ghost && vel > 85 && r < 0.4;
+    const flam = !ghost && vel > 50 && r > 0.9;
+    this.send(CH.drums, rimshot ? 40 : 38, vel, t, 0.15);
     this.heard("ride", vel, 0.25);
-    this.noiseBurst(t, this.spat.ride.input, 1500, (0.4 * vel) / 127, 0.16);
+    if (flam) this.snareHit(t - 0.03, vel * 0.4, tone * 0.96, false, false);
+    this.snareHit(t, vel, tone, rimshot, ghost);
+  }
+
+  private snareHit(t: number, vel: number, tone: number, rimshot: boolean, ghost: boolean): void {
+    const wob = 0.92 + Math.random() * 0.16;
+    const hp = (ghost ? 1000 : 1300 + vel * 9) * tone * wob;
+    this.noiseBurst(t, this.spat.ride.input, hp, ((ghost ? 0.3 : 0.4) * vel) / 127, ghost ? 0.2 : 0.11 + Math.random() * 0.1, rimshot ? 3200 : undefined);
     const o = this.ctx.createOscillator();
     const g = this.ctx.createGain();
-    o.frequency.setValueAtTime(220, t);
-    o.frequency.exponentialRampToValueAtTime(160, t + 0.08);
+    const f0 = (ghost ? 170 : 200 + vel * 0.5) * tone * wob;
+    o.type = ghost ? "sine" : "triangle";
+    o.frequency.setValueAtTime(f0, t);
+    o.frequency.exponentialRampToValueAtTime(f0 * 0.7, t + 0.08);
     g.gain.setValueAtTime(0.0001, t);
     g.gain.linearRampToValueAtTime((0.25 * vel) / 127, t + 0.002);
-    g.gain.exponentialRampToValueAtTime(0.0005, t + 0.12);
+    g.gain.exponentialRampToValueAtTime(0.0005, t + (ghost ? 0.07 : 0.12));
     o.connect(g).connect(this.spat.ride.input);
     o.start(t);
     o.stop(t + 0.14);
+    if (rimshot) {
+      const c = this.ctx.createOscillator();
+      const cg = this.ctx.createGain();
+      c.type = "square";
+      c.frequency.value = 1750 * tone;
+      cg.gain.setValueAtTime(0.0001, t);
+      cg.gain.linearRampToValueAtTime((0.08 * vel) / 127, t + 0.001);
+      cg.gain.exponentialRampToValueAtTime(0.0005, t + 0.03);
+      c.connect(cg).connect(this.spat.ride.input);
+      c.start(t);
+      c.stop(t + 0.04);
+    }
+  }
+
+  /** A tom for the fills: a sine that falls in pitch. */
+  private tom(t: number, vel: number, midi: number): void {
+    vel = Math.round(vel * this.lv.ride);
+    if (vel < 2) return;
+    this.send(CH.drums, midi, vel, t, 0.2);
+    this.heard("ride", vel, 0.3);
+    const f = mtof(midi) * 2.2;
+    const o = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    o.frequency.setValueAtTime(f * 1.4, t);
+    o.frequency.exponentialRampToValueAtTime(f, t + 0.1);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime((0.4 * vel) / 127, t + 0.003);
+    g.gain.exponentialRampToValueAtTime(0.0005, t + 0.35);
+    o.connect(g).connect(this.spat.ride.input);
+    o.start(t);
+    o.stop(t + 0.4);
+    this.noiseBurst(t, this.spat.ride.input, 900, (0.12 * vel) / 127, 0.05);
   }
 
   /** Rim click, the bossa clave. */

@@ -5,6 +5,7 @@ import { Exerciser } from "./exerciser";
 import { queueNote, setSnapshot } from "./feedback";
 import { proveLearning } from "./proof";
 import { Scope, TankView } from "./render";
+import { Stack3D } from "./stack3d";
 import { Simulation, type MemoryMode, type Vec3 } from "./sim";
 import { buildControls, helpButton, hideHelp, showHelp } from "./ui";
 
@@ -83,12 +84,13 @@ for (let i = NUM_LAYERS - 1; i >= 0; i--) {
   caption.textContent = `L${info.id} ${info.name}`;
   box.append(canvas, caption);
   box.addEventListener("click", () => {
+    // A tap on the picture also pokes that layer at the tapped spot (see attachScratch); a drag scratches it instead.
     if (performance.now() - lastScratch > 80) select(i);
   });
   thumbsRoot.append(box);
   const view = new TankView(canvas, i, info.color, false);
   thumbs.push({ view, box });
-  attachScratch(canvas, () => view, false);
+  attachScratch(canvas, () => view, true);
 }
 
 const legend = $("legend");
@@ -456,6 +458,20 @@ $("learn-help").append(
     "Nice injects a shot of a reward hormone (dopamine) that decays in about 6 seconds; Try again injects a negative one. Where the learning lives is your choice. Sand beds (default): between two layers the coupling at each spot is carved by the sand of both beds (dunes open the link, hollows close it; the stack is a 3D medium whose vertical conductivity is made of sand). Positive hormone makes the sand of a layer climb towards spots where it has recently been in phase with its neighbours (negative hormone moves it away, and slides the beds part-way back to ~12 s ago). Sand is only redistributed, never created or destroyed, and the usual levelling slowly forgets. No back-propagation, only waves, sand and a hormone. Link gains: one learned number per link (three-factor rule). The bars show the coupling where the layers cooperate (dashed = innate); the picture is the coupling map of the selected link. The band reads the layer phase locks, so the learned wiring changes the music. Nice also teaches the band's taste and the Monte Carlo model. Prove it runs a control simulation against a copy that gets eight Nice shots on L9 and compares the phase lock.",
   ),
 );
+const stack = new Stack3D($("stack3d") as HTMLCanvasElement, (layer, pos) => {
+  select(layer);
+  fire(layer, pos);
+});
+$("st-iso").addEventListener("click", () => stack.setView(0.6, 0.75));
+$("st-side").addEventListener("click", () => stack.setView(0.6, 0.12));
+$("st-top").addEventListener("click", () => stack.setView(0, 1.5));
+$("stack-help").append(
+  helpButton(
+    "3D stack",
+    "The ten layers as plates in a stack, bottom layer (L1, Physical) at the bottom and the Director (L10) on top. Plate image: the wave field of that layer (brightness = displacement; in 3D tanks the middle slice). Plate rim: thickness = the layer's amplitude, white = the selected layer. Vertical lines: the link between two layers at a sample of spots; width and brightness = the coupling carved by the sand memory there (1 = innate) times how in-phase the two layers have recently been at that spot, so rewarded cooperation lights up. Moving dots run along a link from the louder layer to the quieter one, faster the bigger the difference. Nothing is decoration. Drag to orbit, wheel to zoom, tap a plate to select it and tickle it at that spot (you hear it). It is a canvas-2D orthographic projection, not WebGL.",
+  ),
+);
+
 function drawLearning(): void {
   const d = sim.dopa;
   dopaFill.style.background = d >= 0 ? "#ffd56a" : "#6aa8ff";
@@ -504,6 +520,7 @@ function tick(): void {
   const gain = 2.2;
   currentBig.draw(sim, gain, params.projection);
   thumbs.forEach((t) => t.view.draw(sim, gain, params.projection));
+  if (frame % 2 === 0) stack.draw(sim, selected, nowMs / 1000);
   if (frame % 6 === 0) {
     drawLearning();
     osi.update(sim);

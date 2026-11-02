@@ -50,18 +50,18 @@ function build(rootPc: number, q: QualityKey): Chord {
 // Four chords of two bars each (an eight-bar loop). [root pitch class, quality when resolved, quality when tense].
 type Prog = readonly (readonly [number, QualityKey, QualityKey?])[];
 
-export type StyleId = "swing" | "bebop" | "fusion" | "funk" | "bossa";
-export const STYLE_IDS: readonly StyleId[] = ["swing", "bebop", "fusion", "funk", "bossa"];
+export type StyleId = "swing" | "bebop" | "fusion" | "funk" | "bossa" | "baroque";
+export const STYLE_IDS: readonly StyleId[] = ["swing", "bebop", "fusion", "funk", "bossa", "baroque"];
 
 export interface StyleDef {
   readonly id: StyleId;
   readonly name: string;
   readonly swing: number; // swing of the eighth-note grid at full skill, 0 straight .. 1 triplet
   readonly tempo: number; // multiplier of the tempo slider
-  readonly bass: "walk" | "funk" | "bossa";
-  readonly comp: "charleston" | "chicken" | "bossa";
-  readonly drums: "swing" | "funk" | "bossa" | "fusion";
-  readonly lead: "swing" | "bebop" | "fusion" | "funk" | "theme";
+  readonly bass: "walk" | "funk" | "bossa" | "arp";
+  readonly comp: "charleston" | "chicken" | "bossa" | "none";
+  readonly drums: "swing" | "funk" | "bossa" | "fusion" | "none";
+  readonly lead: "swing" | "bebop" | "fusion" | "funk" | "theme" | "baroque";
   readonly lick: number; // chance that a bar is a phrase (lick / riff) instead of the plain layer-read theme
   readonly progs: readonly Prog[];
 }
@@ -105,6 +105,15 @@ export const STYLES: Record<StyleId, StyleDef> = {
     progs: [
       [[0, "maj9"], [9, "alt"], [2, "m9"], [7, "dom13"]],
       [[9, "m9"], [2, "dom13"], [7, "maj9"], [7, "maj11"]],
+    ],
+  },
+  // Bach's ingredients: straight time, a running bass, sequences along the circle of fifths, ornaments and a canon.
+  baroque: {
+    id: "baroque", name: "Baroque", swing: 0, tempo: 0.95, bass: "arp", comp: "none", drums: "none", lead: "baroque", lick: 0.95,
+    progs: [
+      [[9, "m9"], [2, "m9"], [7, "dom7"], [0, "maj9"]],
+      [[0, "maj9"], [5, "maj9"], [11, "m7b5"], [4, "dom7", "alt"]],
+      [[2, "m9"], [7, "dom7"], [0, "maj9"], [9, "dom7", "alt"]],
     ],
   },
 };
@@ -152,7 +161,7 @@ export interface PersonalityData {
   retries?: number;
 }
 
-const zero = (v: number): Record<StyleId, number> => ({ swing: v, bebop: v, fusion: v, funk: v, bossa: v });
+const zero = (v: number): Record<StyleId, number> => ({ swing: v, bebop: v, fusion: v, funk: v, bossa: v, baroque: v });
 
 export class Personality {
   seconds = 0;

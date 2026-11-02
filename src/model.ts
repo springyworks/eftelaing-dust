@@ -58,7 +58,7 @@ export type Projection = "wave" | "sand" | "both" | "iso" | "profile";
 export type SpatialMode = "stereo" | "binaural";
 export type AudioMode = "raw" | "brain" | "layer1" | "both";
 export type MidiOut = "off" | "on";
-export type BandStyle = "auto" | "swing" | "bebop" | "fusion" | "funk" | "bossa";
+export type BandStyle = "auto" | "swing" | "bebop" | "fusion" | "funk" | "bossa" | "baroque";
 
 export interface Params {
   running: boolean;
