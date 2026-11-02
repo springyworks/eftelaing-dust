@@ -26,6 +26,15 @@
   .btn.nice { background:linear-gradient(180deg,#e8b83a,#a9741a); border-color:#ffd56a; color:#fff; }
   .btn.again { background:linear-gradient(180deg,#4c6a9a,#2a3d5f); border-color:#7fa2d8; color:#fff; }
   .btn.reward.glow { box-shadow:0 0 0 3px #ffd56a88, 0 0 24px #ffd56a66; }
+  .learn-row { display:flex; align-items:flex-end; gap:6px; height:84px; margin:8px 0; }
+  .learn-col { position:relative; flex:1; height:100%; background:#0003; border-radius:3px; }
+  .learn-col .bar { position:absolute; left:0; right:0; bottom:0; background:var(--acc); border-radius:3px; transition:height .15s; }
+  .learn-col .mid { position:absolute; left:0; right:0; border-top:1px dashed #fff8; }
+  .learn-col span { position:absolute; left:0; right:0; bottom:-15px; text-align:center; font-size:10px; color:var(--dim); }
+  .dopa { height:10px; background:#0003; border-radius:5px; position:relative; margin:6px 0; }
+  .dopa .bar { position:absolute; top:0; bottom:0; border-radius:5px; }
+  .learn-out { font-size:12px; color:var(--dim); line-height:1.5; margin-top:18px; }
+  .tank-glow { box-shadow:0 0 0 2px #ffd56a, 0 0 18px #ffd56a99 !important; }
   .reward-note { font-size:12px; color:var(--dim); max-width:360px; line-height:1.25; }
   @keyframes dlg-pulse { 0%,100% { box-shadow:0 10px 40px #000c, 0 0 0 0 #ffb34788; } 50% { box-shadow:0 10px 40px #000c, 0 0 0 10px #ffb34700; } }
   .status { font-size:12px; color:var(--dim); width:100%; }
@@ -167,6 +176,10 @@
         <canvas id="scene" width="640" height="260"></canvas>
         <div class="cues" id="cues"></div>
       </div>
+    </div>
+    <div class="card">
+      <h2>Brain learning: reward hormone <span id="learn-help"></span></h2>
+      <div id="learn"></div>
     </div>
   </div>
 </main>

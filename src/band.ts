@@ -989,11 +989,17 @@ export class Band {
       const pat = CHICKEN[this.compPat] ?? "";
       for (const [i, tt] of subs) {
         const ch = pat[i];
-        if (ch === "x") this.comp(at(tt, 3, 0.4), cur.voicing.slice(-3), vel(46, 30), 0.09, 3);
+        if (ch === "x") this.comp(at(tt, 3, 0.4), cur.voicing, vel(46, 30), 0.14, 4);
         else if (ch === "m" && this.q(3) < 0.4 + 0.6 * groove) this.comp(at(tt, 3, 0.4), cur.voicing.slice(-2), vel(24, 14), 0.04, 2);
       }
     } else if (st.comp === "bossa" && f.d > 0.05) {
       for (const [i, tt] of subs) if (BOSSA_CLAVE[bar % 2]?.[i] === "x") this.comp(at(tt, 3, 0.4), cur.voicing, vel(38, 26), beatDur * 0.35, 4);
+    }
+    // Full ringing chords: like a pianist, land the whole chord (left-hand root plus the right-hand voicing, gently rolled
+    // upwards) on every change, and again halfway through the chord. The stabs above only ever use two or three notes.
+    if (f.d > 0.02 && (inChord === 0 || (inChord === 8 && this.q(6) < 0.55 + 0.4 * groove))) {
+      const full = [cur.root + 12, ...cur.voicing];
+      this.comp(jit(3), full, vel(inChord === 0 ? 58 : 46, 30), beatDur * (inChord === 0 ? 3.2 : 2.2), full.length, 0.013);
     }
     for (const a of accents) {
       const top = cur.voicing.slice(-3).map((n) => n + (a.layer >= 7 ? 12 : 0));
@@ -1185,21 +1191,21 @@ export class Band {
   }
 
   // Electric-piano style FM voices.
-  private comp(t: number, notes: readonly number[], vel: number, dur: number, count: number): void {
+  private comp(t: number, notes: readonly number[], vel: number, dur: number, count: number, strum = 0.007): void {
     vel = Math.round(vel * this.lv.comp);
     if (vel < 2) return;
     notes.slice(0, count).forEach((midi, i) => {
-      this.send(CH.comp, midi, vel, t + i * 0.007, dur);
+      this.send(CH.comp, midi, vel, t + i * strum, dur);
     });
     this.voices.comp.level = Math.max(this.voices.comp.level, vel / 127);
     this.heard("comp", vel, 0.2);
-    for (const [kind, w] of this.mix("comp")) if (w > 0.02) this.compVoice(kind, w, t, notes, vel, dur, count);
+    for (const [kind, w] of this.mix("comp")) if (w > 0.02) this.compVoice(kind, w, t, notes, vel, dur, count, strum);
   }
 
-  private compVoice(kind: number, w: number, t: number, notes: readonly number[], vel: number, dur: number, count: number): void {
+  private compVoice(kind: number, w: number, t: number, notes: readonly number[], vel: number, dur: number, count: number, strum: number): void {
     const ctx = this.ctx;
     notes.slice(0, count).forEach((midi, i) => {
-      const tt = t + i * 0.007;
+      const tt = t + i * strum;
       const f = mtof(midi);
       const x = vel / 127;
       const P = [
@@ -1219,7 +1225,7 @@ export class Band {
       mod.frequency.value = f * pp.ratio;
       mg.gain.setValueAtTime(pp.i0 * f, tt);
       mg.gain.exponentialRampToValueAtTime(Math.max(pp.i1, 0.001) * f, tt + pp.itime);
-      const a = (0.2 * x * pp.amp * w) / Math.sqrt(count);
+      const a = (0.3 * x * pp.amp * w) / Math.sqrt(count);
       g.gain.setValueAtTime(0.0001, tt);
       g.gain.linearRampToValueAtTime(a, tt + pp.atk);
       let stop: number;

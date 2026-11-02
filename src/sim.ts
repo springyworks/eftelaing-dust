@@ -10,6 +10,9 @@ const GRID: Record<Dimension, readonly [number, number, number]> = {
 
 const TARGET_RMS = 0.15;
 const MAX_COUPLING = 0.08;
+const MAX_LEARNED = 0.12; // learned gains may push a link past the innate ceiling, but not without limit
+const GAIN_MIN = 0.5;
+const GAIN_MAX = 2;
 const BED0 = 0.5; // initial (flat) sand height; the bed is a conserved quantity
 const BED_MAX = 1.2; // soft capacity: sand cannot be pushed into cells that are already this full
 const SAND_EVERY = 3; // sim steps per sand step (sand is slow)
@@ -56,6 +59,21 @@ export class Simulation {
   mapping = defaultMapping();
   alignment = 0;
   private readonly vel = new Float32Array(NUM_LAYERS);
+
+  /**
+   * Learned wiring. Link l joins layer l and l+1; its coupling is the innate coupling times gain[l] (1 = innate). A reward
+   * hormone (`dopa`, positive for "nice", negative for "try again") gates a three-factor rule: the link changes in proportion
+   * to the hormone and to its eligibility trace (how phase-locked the two layers have been lately). The hormone is cleared
+   * within seconds, the wiring forgets slowly, and "try again" also rolls the wiring part of the way back.
+   */
+  readonly gain = new Float32Array(NUM_LAYERS).fill(1);
+  dopa = 0;
+  rewards = 0;
+  private readonly elig = new Float32Array(NUM_LAYERS);
+  private focus = -1;
+  private focusUntil = 0;
+  private readonly past: Float32Array[] = [];
+  private pastClock = 0;
 
   private painPos: Vec3 = [0.5, 0.5, 0.5];
   private painUntil = 0;
@@ -366,6 +384,56 @@ export class Simulation {
     return wsum > 0 ? sum / wsum : 0;
   }
 
+  /**
+   * A shot of reward hormone: `amount` > 0 is "nice", < 0 is "try again". `focus` is the layer (0..9) the human is looking at
+   * or scratching; the links next to it learn faster, as attention does.
+   */
+  reward(amount: number, focus = -1): void {
+    this.rewards++;
+    this.dopa = clamp(this.dopa + amount, -2.5, 4);
+    this.focus = focus;
+    this.focusUntil = this.t + 1200;
+    if (amount < 0 && this.past.length > 0) {
+      // Try again: the wiring goes part of the way back to how it was some seconds ago.
+      const old = this.past[Math.max(0, this.past.length - 6)];
+      if (old) for (let l = 0; l < NUM_LAYERS; l++) this.gain[l] = (this.gain[l] ?? 1) + 0.35 * Math.min(1, -amount) * ((old[l] ?? 1) - (this.gain[l] ?? 1));
+    }
+  }
+
+  /** Forgets everything the tanks learned: the wiring is innate again. */
+  forgetWiring(): void {
+    this.gain.fill(1);
+    this.past.length = 0;
+    this.elig.fill(0);
+    this.dopa = 0;
+  }
+
+  private learn(dt: number): void {
+    const n = NUM_LAYERS - 1;
+    const a = 1 - Math.exp(-dt / 4);
+    let mean = 0;
+    for (let l = 0; l < n; l++) {
+      this.elig[l] = (this.elig[l] ?? 0) + a * ((this.lock[l] ?? 0) - (this.elig[l] ?? 0));
+      mean += (this.elig[l] ?? 0) / n;
+    }
+    this.dopa *= Math.exp(-dt / 6);
+    if (Math.abs(this.dopa) < 0.005) this.dopa = 0;
+    const attend = this.t < this.focusUntil ? this.focus : -1;
+    for (let l = 0; l < n; l++) {
+      const near = attend >= 0 && (l === attend || l === attend - 1) ? 2.5 : 1;
+      let g = this.gain[l] ?? 1;
+      g += 0.008 * dt * this.dopa * near * ((this.elig[l] ?? 0) / Math.max(mean, 0.05));
+      g += (1 - g) * (1 - Math.exp(-dt / 900));
+      this.gain[l] = clamp(g, GAIN_MIN, GAIN_MAX);
+    }
+    this.pastClock += dt;
+    if (this.pastClock >= 2) {
+      this.pastClock = 0;
+      this.past.push(Float32Array.from(this.gain));
+      if (this.past.length > 15) this.past.shift();
+    }
+  }
+
   step(p: Params): void {
     this.applyDrives(p);
 
@@ -406,6 +474,8 @@ export class Simulation {
       const cf = 0.3 + 0.3 * (l / (NUM_LAYERS - 1));
       const c2 = (cf * cf) / nAxes;
       const cs = p.sandDepth > 0 ? this.cscale[l] : undefined;
+      const kU = l > 0 ? Math.min(MAX_LEARNED, kUp * (this.gain[l - 1] ?? 1)) : 0;
+      const kD = l < NUM_LAYERS - 1 ? Math.min(MAX_LEARNED, kDown * (this.gain[l] ?? 1)) : 0;
       const gamma = p.damping + stab * 0.03 * sPrev;
       const ks = stab * 0.004 * sPrev;
 
@@ -419,8 +489,8 @@ export class Simulation {
             if (hasY) lap += (u[i - sy] ?? 0) + (u[i + sy] ?? 0) - 2 * c;
             if (hasZ) lap += (u[i - sz] ?? 0) + (u[i + sz] ?? 0) - 2 * c;
             let a = (cs ? c2 * (cs[x + y * nx] ?? 1) : c2) * lap - ks * c - gamma * (v[i] ?? 0);
-            if (below) a += kUp * ((below[i] ?? 0) - c);
-            if (above) a += kDown * ((above[i] ?? 0) - c);
+            if (below) a += kU * ((below[i] ?? 0) - c);
+            if (above) a += kD * ((above[i] ?? 0) - c);
             if (kCtx > 0) a += kCtx * ((ctx[i] ?? 0) - c);
             v[i] = (v[i] ?? 0) + a;
           }
@@ -544,7 +614,9 @@ export class Simulation {
   }
 
   // Recomputes the slow observables: rms, stability chain, vitality, Maslow fulfilment, context alignment.
-  observe(p: Params): void {
+  // `dt` is the real time since the last call in seconds; it sets the speed of the hormone and the learning.
+  observe(p: Params, dt = 1 / 30): void {
+    this.learn(dt);
     this.updateContext(p.context);
     const n = this.size;
     let ctxNorm = 0;

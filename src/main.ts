@@ -3,6 +3,7 @@ import { MaslowDiagram, MatrixDiagram, OsiDiagram, type MatrixClick } from "./di
 import { DEFAULT_PARAMS, LAYERS, NUM_LAYERS, PRESENTATION_KEYS, SCENARIOS, defaultMapping, type Dimension, type Params, type Scenario } from "./model";
 import { Exerciser } from "./exerciser";
 import { setSnapshot } from "./feedback";
+import { proveLearning } from "./proof";
 import { Scope, TankView } from "./render";
 import { Simulation, type Vec3 } from "./sim";
 import { buildControls, helpButton, hideHelp, showHelp } from "./ui";
@@ -270,6 +271,11 @@ function encourage(nice: boolean, btn: HTMLButtonElement): void {
   const amount = 1 + (streak - 1) * 0.4;
   audio.band?.encourage(nice, amount);
   exerciser.cheer(nice);
+  // The hormone shot: gates plasticity of the wiring between the layers, focused on the tank being watched.
+  sim.reward(nice ? amount : -amount, selected);
+  const box = thumbs[selected]?.box;
+  box?.classList.add("tank-glow");
+  window.setTimeout(() => box?.classList.remove("tank-glow"), 600);
   btn.classList.add("glow");
   window.setTimeout(() => btn.classList.remove("glow"), 220);
   const cheers = ["Nice!", "Lovely!", "Yes, keep going!", "Beautiful!", "Heavenly!", "More of that!"];
@@ -279,8 +285,8 @@ function encourage(nice: boolean, btn: HTMLButtonElement): void {
 }
 const niceBtn: HTMLButtonElement = button("Nice", "reward nice", () => encourage(true, niceBtn));
 const againBtn: HTMLButtonElement = button("Try again", "reward again", () => encourage(false, againBtn));
-niceBtn.title = "Reward: this sounds good. Click several times for more sugar.";
-againBtn.title = "Not quite: no punishment, the brain just tries something else next time.";
+niceBtn.title = "Reward: this sounds good. Injects a hormone shot that strengthens the wiring between recently coherent layers. Click several times for more sugar.";
+againBtn.title = "Not quite: no punishment. Injects a negative shot that unlearns a little and rolls the wiring part-way back, then the brain tries something else.";
 toolbar.append(niceBtn, againBtn, rewardNote, playBtn, stepBtn, resetBtn, fireBtn, mcBtn, askBtn, soundBtn, helpBtn);
 
 $("tank-tools").append(
@@ -356,6 +362,82 @@ function stepFrame(n: number): void {
 }
 
 let lastFrame = performance.now();
+let lastObserve = lastFrame;
+
+// The learned wiring (gain of each inter-layer coupling) survives a reload.
+const WIRING_KEY = "eftelaing-dust.tanks.v1";
+try {
+  const saved: unknown = JSON.parse(localStorage.getItem(WIRING_KEY) ?? "null");
+  if (Array.isArray(saved)) saved.forEach((v, i) => { if (typeof v === "number" && i < sim.gain.length) sim.gain[i] = Math.min(2, Math.max(0.5, v)); });
+} catch { /* no saved wiring */ }
+let wiringSavedAt = lastFrame;
+function saveWiring(nowMs: number): void {
+  if (nowMs - wiringSavedAt < 20000) return;
+  wiringSavedAt = nowMs;
+  try { localStorage.setItem(WIRING_KEY, JSON.stringify(Array.from(sim.gain))); } catch { /* storage full or blocked */ }
+}
+
+// Learning card: reward hormone level, the nine learned couplings (dashed line = innate 1.0) and an A/B proof experiment.
+const learnRoot = $("learn");
+const dopaBar = document.createElement("div");
+dopaBar.className = "dopa";
+const dopaFill = document.createElement("div");
+dopaFill.className = "bar";
+dopaBar.append(dopaFill);
+const gainRow = document.createElement("div");
+gainRow.className = "learn-row";
+const gainBars: HTMLElement[] = [];
+for (let l = 0; l < NUM_LAYERS - 1; l++) {
+  const col = document.createElement("div");
+  col.className = "learn-col";
+  col.title = `Coupling between L${l + 1} and L${l + 2}`;
+  const mid = document.createElement("div");
+  mid.className = "mid";
+  mid.style.bottom = "50%";
+  const bar = document.createElement("div");
+  bar.className = "bar";
+  const lab = document.createElement("span");
+  lab.textContent = `${l + 1}-${l + 2}`;
+  col.append(bar, mid, lab);
+  gainBars.push(bar);
+  gainRow.append(col);
+}
+const learnOut = document.createElement("div");
+learnOut.className = "learn-out";
+learnOut.textContent = "Click Nice or Try again and watch the hormone and the couplings move. Prove it runs a control against a rewarded copy.";
+let proving = false;
+const proveBtn = button("Prove it (A/B experiment)", "small", () => {
+  if (proving) return;
+  proving = true;
+  proveBtn.disabled = true;
+  void proveLearning(params, 1, (t) => { learnOut.textContent = t; })
+    .then((r) => {
+      const gain = (r.trained.lock / Math.max(1e-6, r.control.lock) - 1) * 100;
+      learnOut.innerHTML =
+        `Phase lock between layers: <b>${r.control.lock.toFixed(3)}</b> without reward, <b>${r.trained.lock.toFixed(3)}</b> after 8 Nice shots on L9 (${gain >= 0 ? "+" : ""}${gain.toFixed(0)}%). ` +
+        `Mean coupling gain ${r.control.gain.toFixed(2)} to ${r.trained.gain.toFixed(2)}.`;
+    })
+    .catch((e: unknown) => { learnOut.textContent = `Experiment failed: ${String(e)}`; })
+    .finally(() => { proving = false; proveBtn.disabled = false; });
+});
+const forgetBtn = button("Forget learned wiring", "small", () => {
+  sim.forgetWiring();
+  learnOut.textContent = "The wiring is back to its innate state.";
+});
+learnRoot.append(dopaBar, gainRow, proveBtn, forgetBtn, learnOut);
+$("learn-help").append(
+  helpButton(
+    "Reward hormone",
+    "Nice injects a shot of a reward hormone (dopamine) that decays in about 6 seconds. While it is high, the coupling between layers that were recently phase-locked is strengthened, most strongly next to the layer you are watching (three-factor rule with eligibility traces). Try again injects a negative shot: it weakens the same links and rolls the wiring part-way back to how it was ~12 s ago. Slow forgetting pulls everything back towards the innate wiring, so the brain stays creative. The band reads the layer phase locks, so the changed wiring changes the music. Nice also teaches the band's taste for patterns and the Monte Carlo model. The bars show the nine couplings (dashed = innate). Prove it runs a control simulation against a copy that gets eight Nice shots, then compares the phase lock.",
+  ),
+);
+function drawLearning(): void {
+  const d = sim.dopa;
+  dopaFill.style.background = d >= 0 ? "#ffd56a" : "#6aa8ff";
+  dopaFill.style.left = d >= 0 ? "50%" : `${50 + (d / 2.5) * 50}%`;
+  dopaFill.style.width = `${(Math.abs(d) / (d >= 0 ? 4 : 2.5)) * 50}%`;
+  gainBars.forEach((b, l) => { b.style.height = `${((sim.gain[l] ?? 1) / 2) * 100}%`; });
+}
 
 function tick(): void {
   const nowMs = performance.now();
@@ -369,7 +451,9 @@ function tick(): void {
   }
   frame++;
   if (frame % 2 === 0) {
-    sim.observe(params);
+    sim.observe(params, Math.min(0.2, (nowMs - lastObserve) / 1000));
+    lastObserve = nowMs;
+    saveWiring(nowMs);
     scope.push(sim.rms);
     scope.draw();
     audio.update(sim, params, selected);
@@ -379,6 +463,7 @@ function tick(): void {
   currentBig.draw(sim, gain, params.projection);
   thumbs.forEach((t) => t.view.draw(sim, gain, params.projection));
   if (frame % 6 === 0) {
+    drawLearning();
     osi.update(sim);
     maslow.update(sim);
     matrix.update(sim, params.matrixView, selected);
