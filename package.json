@@ -1,0 +1,22 @@
+{
+  "name": "eftelaing-dust",
+  "version": "1.0.0",
+  "description": "OSI-layer-plus (7+3) and Maslow pyramid as a coupled wave simulation",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p .",
+    "build": "npm run typecheck && node build.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@maxgraph/core": "^0.25.1"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.74",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  },
+  "private": true,
+  "type": "module"
+}

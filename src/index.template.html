@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Eftelaing-dust</title>
+<style>
+  :root { --bg:#0b0f15; --panel:#121923; --panel2:#171f2c; --line:#263244; --fg:#e6eaf0; --dim:#93a0b3; --acc:#ffb347; --acc2:#b04ad0; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:10px 16px; border-bottom:1px solid var(--line); background:linear-gradient(90deg,#141b27,#1a1427); position:sticky; top:0; z-index:20; }
+  header h1 { margin:0; font-size:20px; letter-spacing:.04em; }
+  header h1 small { display:block; font-size:11px; font-weight:400; color:var(--dim); letter-spacing:0; }
+  .toolbar { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-left:auto; }
+  .btn { background:var(--panel2); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 12px; cursor:pointer; font:inherit; }
+  .btn:hover { border-color:#4a5d78; background:#1d2838; }
+  .btn.small { padding:2px 10px; font-size:12px; }
+  .btn.fire { background:linear-gradient(180deg,#ff8a2b,#c4400d); border-color:#ff9a4a; font-weight:700; letter-spacing:.05em; }
+  .btn.fire:hover { filter:brightness(1.15); }
+  .btn.on { border-color:var(--acc); color:var(--acc); }
+  .status { font-size:12px; color:var(--dim); width:100%; }
+  main { display:grid; grid-template-columns:340px minmax(0,1fr); gap:12px; padding:12px; }
+  aside { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; max-height:calc(100vh - 110px); overflow:auto; position:sticky; top:96px; align-self:start; }
+  aside h2 { font-size:13px; margin:4px 0 8px; text-transform:uppercase; letter-spacing:.08em; color:var(--acc); }
+  aside h3 { font-size:12px; margin:14px 0 6px; color:var(--dim); text-transform:uppercase; letter-spacing:.06em; border-top:1px solid var(--line); padding-top:8px; }
+  #scenarios { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+  #scenarios .scn { display:flex; gap:4px; }
+  #scenarios .scn .btn { flex:1; text-align:left; font-size:12px; padding:5px 8px; }
+  .row { display:grid; grid-template-columns:1fr 26px; gap:2px 6px; align-items:center; margin-bottom:6px; }
+  .row label { grid-column:1 / 2; display:flex; justify-content:space-between; font-size:12px; color:var(--fg); }
+  .row output { color:var(--acc); font-variant-numeric:tabular-nums; }
+  .row input[type=range], .row select { grid-column:1 / 2; width:100%; accent-color:var(--acc); }
+  .row select { background:var(--panel2); color:var(--fg); border:1px solid var(--line); border-radius:4px; padding:4px; }
+  .row .help { grid-column:2 / 3; grid-row:1 / 3; }
+  button.help { width:22px; height:22px; border-radius:50%; border:1px solid var(--line); background:var(--panel2); color:var(--acc); cursor:pointer; font-weight:700; padding:0; }
+  button.help:hover { background:var(--acc); color:#000; }
+  .popup { position:fixed; z-index:100; max-width:340px; background:#1b2434; border:1px solid var(--acc); border-radius:8px; padding:12px 14px; box-shadow:0 8px 30px #000a; }
+  .popup p { margin:6px 0 10px; line-height:1.45; }
+  .stage { display:flex; flex-direction:column; gap:12px; min-width:0; }
+  .diagrams { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 10px; min-width:0; }
+  .card h2 { margin:0 0 6px; font-size:14px; display:flex; align-items:center; gap:8px; }
+  .graph { position:relative; height:660px; overflow:auto; background:#0d121a; border-radius:6px; }
+  .tanks { display:grid; grid-template-columns:minmax(300px,560px) 1fr; gap:12px; }
+  .big canvas { width:100%; border-radius:6px; background:#090d13; cursor:crosshair; display:block; }
+  .thumbs { display:grid; grid-template-columns:repeat(5, 1fr); gap:6px; }
+  .thumb { border:2px solid transparent; border-radius:6px; background:var(--panel2); padding:3px; cursor:pointer; font-size:11px; color:var(--dim); }
+  .thumb.sel { border-color:#fff; color:#fff; }
+  .thumb canvas { width:100%; aspect-ratio:1; display:block; border-radius:3px; image-rendering:auto; }
+  .readouts { display:flex; flex-wrap:wrap; gap:14px; font-size:12px; color:var(--dim); margin-top:6px; }
+  .readouts b { color:var(--acc); font-variant-numeric:tabular-nums; }
+  #scope { width:100%; height:140px; border-radius:6px; display:block; }
+  .legend { display:flex; flex-wrap:wrap; gap:8px; font-size:11px; margin-top:4px; }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:3px; }
+  footer { padding:6px 16px 24px; color:var(--dim); font-size:12px; }
+  footer a { color:var(--acc); }
+  @media (max-width:1250px) { main { grid-template-columns:1fr; } aside { position:static; max-height:none; } .diagrams, .tanks { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Eftelaing-dust<small>OSI+ (7+3 layers) and Maslow's pyramid as one coupled wave instrument</small></h1>
+  <div class="toolbar" id="toolbar"></div>
+  <div class="status" id="status"></div>
+</header>
+<main>
+  <aside>
+    <h2>Scenarios</h2>
+    <div id="scenarios"></div>
+    <div id="controls"></div>
+  </aside>
+  <div class="stage">
+    <div class="diagrams">
+      <div class="card"><h2>OSI-layer plus (L1-L10) <span id="osi-help"></span></h2><div class="graph" id="osi"></div></div>
+      <div class="card"><h2>Maslow pyramid <span id="maslow-help"></span></h2><div class="graph" id="maslow"></div></div>
+    </div>
+    <div class="tanks">
+      <div class="card big">
+        <h2><span id="big-title">Ripple tank</span> <span id="tank-help"></span></h2>
+        <canvas id="big" aria-label="Selected layer ripple tank. Click to fire a pulse."></canvas>
+        <div class="readouts">
+          <span>Context alignment <b id="ro-align">0%</b></span>
+          <span>Selected amplitude <b id="ro-amp">0</b></span>
+          <span>Stability below <b id="ro-stab">100%</b></span>
+        </div>
+      </div>
+      <div class="card">
+        <h2>All ten tanks <span id="thumbs-help"></span></h2>
+        <div class="thumbs" id="thumbs"></div>
+        <h2 style="margin-top:12px">Layer amplitude over time <span id="scope-help"></span></h2>
+        <canvas id="scope" width="600" height="140"></canvas>
+        <div class="legend" id="legend"></div>
+      </div>
+    </div>
+  </div>
+</main>
+<footer>
+  Dev sources:
+  <a href="https://en.wikipedia.org/wiki/Dust_(His_Dark_Materials)" target="_blank" rel="noreferrer">#1 Dust (His Dark Materials), Wikipedia</a> ·
+  <a href="https://doi.org/10.1038/s41586-026-10910-z" target="_blank" rel="noreferrer">#2 Psychedelics align brain activity with context, Nature</a>.
+  This is an artistic simulation, not a neuroscience or network model. Shortcuts: Space = play/pause, F = fire, S = sound.
+</footer>
+<!--__SCRIPT__-->
+</body>
+</html>
