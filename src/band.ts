@@ -12,6 +12,14 @@
 //   dust                   -> loose, human ride timing
 //   L2..L10 pitch + spikes -> the choir: every layer is its own MIDI voice (chord tones from its measured pitch) and
 //                             speaks up when it spikes; each voice has its own HRTF source at its layer's place
+//
+// No dice: every decision that used to be random now reads the tanks. q(l) walks through the wave field of layer l and
+// squashes the sample to 0..1, so "chance" is the state of the stack. The tune itself is a theme read off the layers:
+//   theme A  = a scan line through layer 1's sand bed (the terrain the waves have carved) plus its live wave, eight samples
+//              for the eight eighth-notes of a bar, turned into scale steps; B is read the same way from the loudest upper layer
+//   rhythm   = the synchroniser: eighth-note slot k of the bar belongs to the phase lock between layers k+1 and k+2. A slot
+//              speaks when that pair is more in sync than average
+//   form     = A A A A | B B | A A over the eight-bar loop; every odd bar answers with a fresh live reading in its tail
 // Notes are plain MIDI events (channel, note, velocity, duration). They drive the internal synthesiser and, optionally,
 // a real MIDI output through Web MIDI.
 
@@ -84,6 +92,15 @@ export interface ScenePos {
   r: number;
 }
 
+interface Theme {
+  name: string;
+  layer: number;
+  line: string; // where it was read, for the display
+  deg: number[]; // scale steps relative to the anchor, one per eighth-note slot of the bar
+  hit: boolean[]; // which slots speak, from the synchroniser
+}
+
+const lerp1 = (a: number, b: number, k: number): number => a + (b - a) * k;
 const CHOIR_CH = [3, 4, 5, 6, 7, 8, 10, 11, 12] as const; // MIDI channels of L2..L10 (channel 10 is the drums)
 
 export class Band {
@@ -107,6 +124,11 @@ export class Band {
   private accents: { layer: number; mag: number }[] = [];
   private readonly noise: AudioBuffer;
   private readonly spat: { bass: Spat; comp: Spat; lead: Spat; ride: Spat };
+  private sim: Simulation | null = null;
+  private qi = 0;
+  private themes: { A?: Theme; B?: Theme } = {};
+  private answer: Theme | null = null;
+  themeInfo = "";
   private readonly choir: Spat[]; // one per layer; index 0 is unused
   private lv = { bass: 1, comp: 1, lead: 1, ride: 1, choir: 0 };
   private pitchHz: ArrayLike<number> = [];
@@ -177,6 +199,7 @@ export class Band {
       rms,
     };
     this.pitchHz = pitchHz;
+    this.sim = sim;
     this.lv = { bass: p.bandBass, comp: p.bandKeys, lead: p.bandLead, ride: p.bandDrums, choir: p.bandChoir * brain };
     // Layer 1 pushes the tempo a little; with the brain share up, the Director (L10) conducts it.
     const push = lerp(rms[0] ?? 0, rms[9] ?? 0, 0.6 * brain);
@@ -237,6 +260,77 @@ export class Band {
     }
   }
 
+  /** A number in 0..1 taken from the wave field of layer l: the state of the stack instead of a dice. */
+  private q(l: number): number {
+    const sim = this.sim;
+    const u = sim?.u[l];
+    if (!sim || !u || u.length === 0) return 0.5;
+    this.qi = (this.qi + 7919) % u.length;
+    const r = (sim.rms[l] ?? 0) * 1.5 + 1e-6;
+    return 0.5 + 0.5 * Math.tanh((u[this.qi] ?? 0) / r);
+  }
+
+  /** Reads a theme of eight notes and eight rhythm slots off the layers. */
+  private readTheme(name: string, layer: number, vertical: boolean): Theme {
+    const sim = this.sim;
+    const deg: number[] = Array(8).fill(0);
+    const hit: boolean[] = Array(8).fill(false);
+    if (!sim) return { name, layer, line: "-", deg, hit };
+    const nx = sim.nx;
+    const ny = sim.ny;
+    const bed = sim.bed[layer];
+    const u = sim.u[layer];
+    const z = Math.round((sim.cen[layer * 3 + 2] ?? 0.5) * (sim.nz - 1));
+    const fixed = vertical ? Math.round((sim.cen[layer * 3] ?? 0.5) * (nx - 1)) : Math.round((sim.cen[layer * 3 + 1] ?? 0.5) * (ny - 1));
+    const sample = (arr: Float32Array | undefined, off: number, k: number): number => {
+      const along = Math.round(((k + 0.5) / 8) * ((vertical ? ny : nx) - 1));
+      const x = vertical ? fixed : along;
+      const y = vertical ? along : fixed;
+      return arr?.[off + y * nx + x] ?? 0;
+    };
+    const norm = (a: number[]): number[] => {
+      const m = a.reduce((x, y) => x + y, 0) / a.length;
+      const peak = Math.max(...a.map((v) => Math.abs(v - m)));
+      return peak < 1e-7 ? a.map(() => 0) : a.map((v) => Math.sign(v - m) * Math.sqrt(Math.abs(v - m) / peak));
+    };
+    const sand = norm(Array.from({ length: 8 }, (_, k) => sample(bed, 0, k)));
+    const wave = norm(Array.from({ length: 8 }, (_, k) => sample(u, z * sim.plane, k)));
+    for (let k = 0; k < 8; k++) deg[k] = clamp(Math.round(((sand[k] ?? 0) * 0.6 + (wave[k] ?? 0) * 0.4) * 6), -5, 5);
+    // The synchroniser: slot k is the phase lock between layers k+1 and k+2.
+    const lock = Array.from({ length: 8 }, (_, k) => sim.lock[k] ?? 0);
+    const mean = lock.reduce((x, y) => x + y, 0) / 8;
+    for (let k = 0; k < 8; k++) hit[k] = k === 0 || (lock[k] ?? 0) >= mean;
+    return { name, layer, line: `L${layer + 1} ${vertical ? "column" : "row"} ${fixed}`, deg, hit };
+  }
+
+  /** Form over the eight-bar loop: A A A A | B B | A A, with the tail of every odd bar answered by a fresh live reading. */
+  private themeFor(bar: number): Theme | undefined {
+    const b = bar % 8;
+    return b === 4 || b === 5 ? this.themes.B : this.themes.A;
+  }
+
+  private prepareBar(bar: number, f: Features): void {
+    const b = bar % 8;
+    if (b === 0 || !this.themes.A) this.themes.A = this.readTheme("A", 0, false);
+    if (b === 4 || !this.themes.B) {
+      let lead = 0;
+      let best = 0;
+      if (f.brain > 0.05) {
+        for (let l = 1; l < NUM_LAYERS; l++) {
+          const w = (f.rms[l] ?? 0) * f.brain;
+          if (w > best) {
+            best = w;
+            lead = l;
+          }
+        }
+      }
+      this.themes.B = this.readTheme("B", lead, lead === 0);
+    }
+    const th = this.themeFor(bar);
+    this.answer = bar % 2 === 1 && th ? this.readTheme(th.name + "'", th.layer, th.layer === 0 && th.name === "B") : null;
+    this.themeInfo = `${th?.name ?? "-"}${this.answer ? "'" : ""} (${th?.line ?? "-"}) steps ${th?.deg.join(" ") ?? ""} · sync ${th?.hit.map((h) => (h ? "x" : ".")).join("") ?? ""}`;
+  }
+
   private send(ch: number, note: number, vel: number, t: number, dur: number): void {
     const out = this.midi;
     if (!out || !this.midiOn) return;
@@ -263,9 +357,11 @@ export class Band {
     const cur = this.cur;
     const nextChord = progression(f.tension)[(this.chordIndex + 1) % 4] ?? cur;
     const beatDur = 60 / this.bpm;
-    const vel = (base: number, span: number): number => Math.round(clamp(base + span * f.d + (Math.random() - 0.5) * 10, 1, 127));
+    const vel = (base: number, span: number): number => Math.round(clamp(base + span * f.d + (this.q(0) - 0.5) * 10, 1, 127));
     const dens = p.bandDensity * 2;
     const loose = (0.3 + p.dust * 3) * 0.012 * (1.7 - f.health);
+    const jit = (l: number): number => Math.max(this.ctx.currentTime, t + (this.q(l) - 0.5) * loose);
+    const k = s % 8; // slot of the bar
 
     // Walking bass: one note per beat, always from the bottom layer's activity.
     if (!off && f.d > 0.02) {
@@ -286,16 +382,18 @@ export class Band {
     // Ride cymbal: quarter notes plus the swung skip beat, loosened by Dust; foot hi-hat on 2 and 4.
     if (f.d > 0.02) {
       const skip = off && (q === 1 || q === 3);
-      if ((!off || skip) && Math.random() > p.dust * 0.5) {
-        const v = Math.round(clamp((skip ? 38 : 48) + 26 * f.d + (q === 1 || q === 3 ? 6 : 0) + (Math.random() - 0.5) * 14 * (0.3 + p.dust * 3), 1, 127));
-        this.rideHit(Math.max(this.ctx.currentTime, t + (Math.random() - 0.5) * loose), v, 0.4);
+      if ((!off || skip) && this.q(1) > p.dust * 0.5) {
+        const v = Math.round(clamp((skip ? 38 : 48) + 26 * f.d + (q === 1 || q === 3 ? 6 : 0) + (this.q(1) - 0.5) * 14 * (0.3 + p.dust * 3), 1, 127));
+        this.rideHit(jit(1), v, 0.4);
       }
       if (!off && (q === 1 || q === 3)) this.hatFoot(t, Math.round(30 + 25 * f.d));
     }
 
     // Comping: the charleston "1" and "and of 2", extra hits by crest factor, and a stab for every accent.
-    const compWanted = f.d > 0.05 && ((!off && q === 0 && Math.random() < 0.5) || (off && q === 1) || (off && Math.random() < (0.1 + 0.35 * f.crest) * dens));
-    if (compWanted) this.comp(Math.max(this.ctx.currentTime, t + (Math.random() - 0.5) * loose), cur.voicing, vel(40, 34), beatDur * 0.4, f.crest < 0.3 ? 3 : 4);
+    const lk = this.sim?.lock;
+    const sync = lk ? (lk[k] ?? 0) - lk.reduce((x, y) => x + y, 0) / lk.length : 0;
+    const compWanted = f.d > 0.05 && ((!off && q === 0 && this.q(3) < 0.5) || (off && q === 1) || (off && sync > 0 && this.q(3) < (0.25 + 0.7 * f.crest) * dens));
+    if (compWanted) this.comp(jit(3), cur.voicing, vel(40, 34), beatDur * 0.4, f.crest < 0.3 ? 3 : 4);
     for (const a of accents) {
       const top = cur.voicing.slice(-3).map((n) => n + (a.layer >= 7 ? 12 : 0));
       this.comp(t, top, Math.round(clamp(52 + a.mag * 16, 1, 127)), beatDur * 0.3, 3);
@@ -309,29 +407,28 @@ export class Band {
       for (let l = 1; l < NUM_LAYERS; l++) {
         if ((beat + l) % 4 !== 0) continue;
         const r = f.rms[l] ?? 0;
-        if (Math.random() > clamp((0.2 + 1.1 * r) * f.brain, 0, 0.95)) continue;
-        this.choirNote(l, Math.max(this.ctx.currentTime, t + (Math.random() - 0.5) * loose), this.layerNote(l, cur, f), Math.round(clamp(28 + 56 * r, 1, 127)), beatDur * 1.6);
+        if (this.q(l) > clamp((0.2 + 1.1 * r) * f.brain, 0, 0.95)) continue;
+        this.choirNote(l, jit(l), this.layerNote(l, cur, f), Math.round(clamp(28 + 56 * r, 1, 127)), beatDur * 1.6);
       }
     }
 
-    // Melody: eighth-note lines that move by step, snapping to chord tones on the strong beats.
-    if (f.d > 0.12 && Math.random() < (0.22 + 0.62 * f.d) * dens) {
+    // Melody: the theme of the current bar, read off the layers (see the header), transposed onto the current chord.
+    if (k === 0) this.prepareBar(s >> 3, f);
+    const th = this.answer && k >= 5 ? this.answer : this.themeFor(s >> 3);
+    if (th && f.d > 0.08 && th.hit[k] === true && this.q(2) < clamp(dens * (0.4 + 0.8 * lerp1(f.d, f.rms[k] ?? 0, f.brain)), 0, 1)) {
       const pool: number[] = [];
       for (let m = 58; m <= 88; m++) if (cur.scale.includes(m % 12)) pool.push(m);
+      const centre = 64 + f.lx * 16 - (f.ly - 0.5) * 6;
       let idx = 0;
       let bestD = Infinity;
       pool.forEach((m, i) => {
-        const dd = Math.abs(m - this.leadMidi);
+        const dd = Math.abs(m - centre);
         if (dd < bestD) {
           bestD = dd;
           idx = i;
         }
       });
-      const up = (0.5 - f.ly) * 2;
-      const centre = 64 + f.lx * 16;
-      const pull = (this.leadMidi - centre) / 14;
-      const goUp = Math.random() < clamp(0.5 + 0.3 * up - 0.35 * pull, 0.1, 0.9);
-      idx = clamp(idx + (goUp ? 1 : -1) * (Math.random() < 0.7 ? 1 : 2), 0, pool.length - 1);
+      idx = clamp(idx + (th.deg[k] ?? 0), 0, pool.length - 1);
       let note = pool[idx] ?? this.leadMidi;
       if (!off && q % 2 === 0) {
         const pcs = cur.bass.map((i) => (cur.root + i) % 12);
@@ -348,7 +445,7 @@ export class Band {
         note = best;
       }
       this.leadMidi = note;
-      this.leadNote(t, note, vel(56, 40), stepLen * 0.9);
+      this.leadNote(t, note, vel(52, 44), stepLen * 0.9);
     }
   }
 
@@ -360,7 +457,7 @@ export class Band {
     while (m > reg + 7) m -= 12;
     while (m < reg - 5) m += 12;
     m = Math.round(m);
-    const pcs = Math.random() < 0.55 + 0.45 * f.health ? cur.bass.map((i) => (cur.root + i) % 12) : cur.scale;
+    const pcs = this.q(l) < 0.55 + 0.45 * f.health ? cur.bass.map((i) => (cur.root + i) % 12) : cur.scale;
     let best = m;
     let bd = Infinity;
     for (let n = m - 6; n <= m + 6; n++) {

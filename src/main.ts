@@ -287,7 +287,7 @@ function tick(): void {
       const cues = binauralCues(sv.az, sv.el);
       $("cues").innerHTML =
         `Selected: <b>L${selected + 1}</b><br>azimuth <b>${sv.az.toFixed(0)}°</b> elevation <b>${sv.el.toFixed(0)}°</b><br>distance <b>${sv.r.toFixed(1)} m</b><br>` +
-        `ITD <b>${Math.abs(cues.itdUs).toFixed(0)} µs</b> ${cues.itdUs >= 0 ? "(right ear first)" : "(left ear first)"}<br>ILD <b>${cues.ildDb.toFixed(1)} dB</b><br>pinna notch <b>${(cues.notchHz / 1000).toFixed(1)} kHz</b><br>chord <b>${audio.chord}</b><br>band <b>${audio.band ? audio.band.bpm.toFixed(0) : "-"} bpm</b>${audio.band?.midiName ? `<br>MIDI <b>${audio.band.midiName}</b>` : ""}`;
+        `ITD <b>${Math.abs(cues.itdUs).toFixed(0)} µs</b> ${cues.itdUs >= 0 ? "(right ear first)" : "(left ear first)"}<br>ILD <b>${cues.ildDb.toFixed(1)} dB</b><br>pinna notch <b>${(cues.notchHz / 1000).toFixed(1)} kHz</b><br>chord <b>${audio.chord}</b><br>theme <b>${audio.band?.themeInfo ?? "-"}</b><br>band <b>${audio.band ? audio.band.bpm.toFixed(0) : "-"} bpm</b>${audio.band?.midiName ? `<br>MIDI <b>${audio.band.midiName}</b>` : ""}`;
     }
     $("ro-relief").textContent = sim.sandRelief(selected).toFixed(3);
     $("ro-sand").textContent = sim.sandMass(selected).toFixed(1);
