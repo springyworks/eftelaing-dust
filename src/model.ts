@@ -79,6 +79,7 @@ export interface Params {
   psychedelic: number; // 5-HT2A-like context alignment
   context: ContextMode;
   volume: number;
+  alcCeiling: number;
   listen: ListenMode;
   fmDepth: number; // FM modulation index scale of the monitor
   spikeSens: number; // spike detector sensitivity
@@ -127,6 +128,7 @@ export const DEFAULT_PARAMS: Params = {
   psychedelic: 0,
   context: "rest",
   volume: 0.5,
+  alcCeiling: 0.8,
   listen: "all",
   fmDepth: 0.6,
   spikeSens: 0.5,
@@ -156,7 +158,7 @@ export const DEFAULT_PARAMS: Params = {
 };
 
 // Settings that describe how the human sees and hears the instrument; scenarios leave them alone.
-export const PRESENTATION_KEYS = ["volume", "listen", "fmDepth", "spikeSens", "projection", "spatial", "width", "reverb", "jazz", "swing", "audioMode", "tempo", "midiOut", "bandBrain", "rawLevel", "bandLevel", "bandDensity", "bandChoir", "bandBass", "bandKeys", "bandLead", "bandDrums", "matrixView"] as const;
+export const PRESENTATION_KEYS = ["volume", "alcCeiling", "listen", "fmDepth", "spikeSens", "projection", "spatial", "width", "reverb", "jazz", "swing", "audioMode", "tempo", "midiOut", "bandBrain", "rawLevel", "bandLevel", "bandDensity", "bandChoir", "bandBass", "bandKeys", "bandLead", "bandDrums", "matrixView"] as const;
 
 export interface Scenario {
   readonly id: string;

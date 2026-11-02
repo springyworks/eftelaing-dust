@@ -585,7 +585,7 @@ export class Band {
     const a = (0.16 * vel) / 127;
     g.gain.setValueAtTime(0.0001, t);
     g.gain.linearRampToValueAtTime(a, t + 0.015);
-    g.gain.setValueAtTime(a * 0.8, t + dur * 0.7);
+    g.gain.linearRampToValueAtTime(a * 0.8, t + dur * 0.7);
     g.gain.linearRampToValueAtTime(0.0001, t + dur + 0.05);
     o.connect(lp).connect(g).connect(this.spat.lead.input);
     o.start(t);
@@ -602,7 +602,8 @@ export class Band {
     hi.type = "highpass";
     hi.frequency.value = hp;
     const g = ctx.createGain();
-    g.gain.setValueAtTime(peak, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(peak, t + 0.002);
     g.gain.exponentialRampToValueAtTime(0.0005, t + decay);
     src.connect(hi);
     if (band) {
@@ -628,7 +629,8 @@ export class Band {
     const ping = ctx.createOscillator();
     const g = ctx.createGain();
     ping.frequency.value = 5200;
-    g.gain.setValueAtTime(peak * 0.25, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(peak * 0.25, t + 0.002);
     g.gain.exponentialRampToValueAtTime(0.0005, t + 0.18);
     ping.connect(g).connect(this.spat.ride.input);
     ping.start(t);

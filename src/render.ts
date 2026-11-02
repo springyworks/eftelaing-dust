@@ -50,6 +50,17 @@ export class TankView {
     }
   }
 
+  // Maps a pointer position (fractions of the canvas) back to a tank position for the given projection.
+  pick(fx: number, fy: number, projection: Projection): [number, number, number] {
+    const c = (v: number): number => Math.max(0, Math.min(1, v));
+    if (this.large && projection === "iso") {
+      const depth = c((fy - 0.36) / 0.48);
+      return [c((fx - (0.2 * (1 - depth) + 0.03)) / 0.74), depth, 0.5];
+    }
+    if (this.large && projection === "profile") return [c(fx), 0.5, 0.5];
+    return [c(fx), c(fy), 0.5];
+  }
+
   draw(sim: Simulation, gain: number, projection: Projection = "wave"): void {
     const ctx2d = this.canvas.getContext("2d");
     const field = sim.u[this.layer];

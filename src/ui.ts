@@ -210,6 +210,7 @@ const GROUPS: readonly Group[] = [
       { kind: "slider", key: "fmDepth", label: "FM depth", min: 0, max: 1, step: 0.01, help: "Scales the FM modulation index. Higher values make turbulent, peaky fields sound metallic and bright; zero gives plain sine tones." },
       { kind: "slider", key: "spikeSens", label: "Spike sensitivity", min: 0, max: 1, step: 0.01, help: "How big a sudden jump in a layer's wave velocity must be to count as a spike. Spikes flash the monitor LEDs and fire a bright FM pluck." },
       { kind: "slider", key: "volume", label: "Volume", min: 0, max: 1, step: 0.01, help: "Master volume. Use the Sound button in the toolbar (or S) to switch audio on; browsers need a click first." },
+      { kind: "slider", key: "alcCeiling", label: "Level ceiling (ALC)", min: 0.3, max: 0.95, step: 0.01, help: "Automatic level control. A watcher measures the peak of everything that is about to be played and pulls the gain down at once when it would exceed this ceiling, then lets it recover slowly, like a homeostatic reflex. Behind it sit a fast limiter and a soft clipper, so the output can never clip. The ALC readout in the audio scene shows the gain reduction in dB." },
     ],
   },
 ];

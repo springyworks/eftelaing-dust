@@ -250,6 +250,12 @@ export class Simulation {
     if (u) this.bump(u, p, this.sigma() * 1.3, amp);
   }
 
+  // Finger in the water: a small gaussian dent at a normalised position, meant to be called along a drag path.
+  scratch(layer: number, pos: Vec3, amp = 0.1): void {
+    const u = this.u[layer];
+    if (u) this.bump(u, pos, this.sigma() * 0.6, amp);
+  }
+
   // Reverse mapping: strike every OSI layer that a Maslow level maps to.
   fireLevel(level: number): void {
     for (let l = 0; l < NUM_LAYERS; l++) {

@@ -212,6 +212,13 @@ export class WaveMonitor {
   band: Band | null = null;
   private bandBus: GainNode | null = null;
   private lastParams: Params | null = null;
+  private alc: GainNode | null = null;
+  private alcIn: AnalyserNode | null = null;
+  private alcGain = 1;
+  private alcLast = 0;
+  private clipHold = 0;
+  private readonly alcBuf = new Float32Array(2048);
+  private limiter: DynamicsCompressorNode | null = null;
   private meterL: AnalyserNode | null = null;
   private meterR: AnalyserNode | null = null;
   private readonly meterBuf = new Float32Array(1024);
@@ -236,16 +243,47 @@ export class WaveMonitor {
     const ctx = new AudioContext();
     const master = ctx.createGain();
     master.gain.value = 0;
+    // Output stage: ALC gain (feed-forward from a peak watcher) -> fast limiter -> tanh soft clipper -> out.
+    const alc = ctx.createGain();
+    const alcIn = ctx.createAnalyser();
+    alcIn.fftSize = 2048;
+    alcIn.smoothingTimeConstant = 0;
     const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -2;
+    comp.knee.value = 0;
+    comp.ratio.value = 20;
+    comp.attack.value = 0.002;
+    comp.release.value = 0.2;
+    const clip = ctx.createWaveShaper();
+    const curve = new Float32Array(4096);
+    // Transparent (slope 1) up to 0.7, then a smooth tanh knee that tops out at 0.98.
+    for (let i = 0; i < curve.length; i++) {
+      const x = (i / (curve.length - 1)) * 2 - 1;
+      const a = Math.abs(x);
+      curve[i] = Math.sign(x) * (a <= 0.7 ? a : 0.7 + 0.28 * Math.tanh((a - 0.7) / 0.28));
+    }
+    clip.curve = curve;
+    clip.oversample = "4x";
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 2048;
     analyser.smoothingTimeConstant = 0.7;
-    master.connect(comp).connect(analyser).connect(ctx.destination);
+    // The watcher sees the signal 35 ms before it reaches the ALC gain, so a peak is already ducked when it arrives.
+    const ahead = ctx.createDelay(0.1);
+    ahead.delayTime.value = 0.035;
+    master.connect(alcIn);
+    master.connect(ahead).connect(alc);
+    // The compressor applies an automatic make-up gain (about 1.14 for these settings); undo it so the ceiling is honest.
+    const unmake = ctx.createGain();
+    unmake.gain.value = 0.876;
+    alc.connect(comp).connect(unmake).connect(clip).connect(analyser).connect(ctx.destination);
+    this.alc = alc;
+    this.alcIn = alcIn;
+    this.limiter = comp;
     const split = ctx.createChannelSplitter(2);
     this.meterL = ctx.createAnalyser();
     this.meterR = ctx.createAnalyser();
     this.meterL.fftSize = this.meterR.fftSize = 1024;
-    comp.connect(split);
+    clip.connect(split);
     split.connect(this.meterL, 0);
     split.connect(this.meterR, 1);
     const verb = ctx.createConvolver();
@@ -277,6 +315,28 @@ export class WaveMonitor {
     void ctx.suspend();
   }
 
+  // Automatic level control: attack instantly on a peak over the ceiling, release slowly (about 1.5 s).
+  private levelControl(ceiling: number, now: number): void {
+    const an = this.alcIn;
+    if (!an || !this.alc) return;
+    an.getFloatTimeDomainData(this.alcBuf);
+    let peak = 0;
+    for (const s of this.alcBuf) peak = Math.max(peak, Math.abs(s));
+    const dt = Math.min(0.2, Math.max(0.001, now - this.alcLast));
+    this.alcLast = now;
+    const need = peak > 1e-4 ? Math.min(1, ceiling / peak) : 1;
+    if (need < this.alcGain) this.alcGain = need;
+    else this.alcGain += (need - this.alcGain) * (1 - Math.exp(-dt / 1.5));
+    this.alc.gain.setTargetAtTime(this.alcGain, now, 0.004);
+    if (peak * this.alcGain > 0.97) this.clipHold = 1;
+    else this.clipHold = Math.max(0, this.clipHold - dt);
+  }
+
+  // Gain reduction of the ALC plus the limiter, in dB (0 or negative).
+  get reductionDb(): number {
+    return 20 * Math.log10(Math.max(1e-3, this.alcGain)) + (this.limiter?.reduction ?? 0);
+  }
+
   update(sim: Simulation, p: Params, selected: number): void {
     this.lastParams = p;
     const ctx = this.ctx;
@@ -306,6 +366,7 @@ export class WaveMonitor {
     if (!ctx || !this.enabled || !this.master) return;
     const now = ctx.currentTime;
     this.master.gain.setTargetAtTime(p.volume * 0.6, now, 0.05);
+    this.levelControl(p.alcCeiling, now);
     const glide = p.jazz > 0 ? 0.03 : 0.06;
     const rawMix = (p.audioMode === "raw" ? 1 : p.audioMode === "both" ? 0.6 : 0) * p.rawLevel;
     this.bandBus?.gain.setTargetAtTime((p.audioMode === "raw" ? 0 : p.audioMode === "both" ? 0.8 : 1) * p.bandLevel, now, 0.05);
@@ -352,7 +413,8 @@ export class WaveMonitor {
     mod.frequency.value = hz * 3.5;
     modGain.gain.setValueAtTime(hz * 3.5 * (1 + 4 * depth) * Math.min(1.5, magnitude / 2), t);
     modGain.gain.exponentialRampToValueAtTime(1, t + 0.18);
-    env.gain.setValueAtTime(0.22, t);
+    env.gain.setValueAtTime(0.0001, t);
+    env.gain.linearRampToValueAtTime(0.22, t + 0.003);
     env.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
     mod.connect(modGain).connect(car.frequency);
     car.connect(env).connect(voice.spat.input);
@@ -526,6 +588,9 @@ export class WaveMonitor {
     c.fillRect(6, h - 22, (pw - 12) * lv, 6);
     c.fillStyle = "#ffb347";
     c.fillRect(6, h - 12, (pw - 12) * rv, 6);
+    const red = this.reductionDb;
+    c.fillStyle = red < -6 ? "#ff5a3c" : red < -0.5 ? "#ffb347" : "#93a0b3";
+    c.fillText(`ALC ${red.toFixed(1)} dB${this.clipHold > 0 ? " PEAK" : ""}`, 6, h - 27);
     c.fillStyle = "#93a0b3";
     c.fillText("L", pw - 4, h - 16);
     c.fillText("R", pw - 4, h - 6);

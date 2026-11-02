@@ -80,9 +80,13 @@ for (let i = NUM_LAYERS - 1; i >= 0; i--) {
   const caption = document.createElement("div");
   caption.textContent = `L${info.id} ${info.name}`;
   box.append(canvas, caption);
-  box.addEventListener("click", () => select(i));
+  box.addEventListener("click", () => {
+    if (performance.now() - lastScratch > 80) select(i);
+  });
   thumbsRoot.append(box);
-  thumbs.push({ view: new TankView(canvas, i, info.color, false), box });
+  const view = new TankView(canvas, i, info.color, false);
+  thumbs.push({ view, box });
+  attachScratch(canvas, () => view, false);
 }
 
 const legend = $("legend");
@@ -111,17 +115,51 @@ function select(layer: number): void {
   thumbs.forEach((t) => t.box.classList.toggle("sel", t.view.layer === layer));
 }
 
-function posFromEvent(e: MouseEvent): Vec3 {
-  const r = bigCanvas.getBoundingClientRect();
-  return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height, 0.5];
-}
-
 function fire(layer: number, pos?: Vec3): void {
   sim.fire(layer, pos);
   audio.ping(layer);
 }
 
-bigCanvas.addEventListener("click", (e) => fire(selected, posFromEvent(e)));
+// Finger in the water: dragging on any tank draws a trail of ripples into that layer; a plain tap on the big tank still drops one pulse.
+let lastScratch = 0;
+function attachScratch(canvas: HTMLCanvasElement, view: () => TankView, big: boolean): void {
+  let last: Vec3 | null = null;
+  let travel = 0;
+  const pos = (e: PointerEvent): Vec3 => {
+    const r = canvas.getBoundingClientRect();
+    return view().pick((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height, params.projection);
+  };
+  canvas.style.touchAction = "none";
+  canvas.addEventListener("pointerdown", (e) => {
+    canvas.setPointerCapture(e.pointerId);
+    last = pos(e);
+    travel = 0;
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!last) return;
+    const p = pos(e);
+    const dist = Math.hypot(p[0] - last[0], p[1] - last[1]);
+    travel += dist;
+    if (travel < 0.02) return;
+    const steps = Math.max(1, Math.ceil((dist * sim.nx) / 0.7));
+    for (let i = 1; i <= steps; i++) {
+      const f = i / steps;
+      sim.scratch(view().layer, [last[0] + (p[0] - last[0]) * f, last[1] + (p[1] - last[1]) * f, 0.5], 0.1);
+    }
+    last = p;
+  });
+  const end = (e: PointerEvent): void => {
+    if (!last) return;
+    const tap = travel < 0.02;
+    last = null;
+    if (!tap) lastScratch = performance.now();
+    else if (big && e.type === "pointerup") fire(view().layer, pos(e));
+  };
+  canvas.addEventListener("pointerup", end);
+  canvas.addEventListener("pointercancel", end);
+}
+
+attachScratch(bigCanvas, () => currentBig, true);
 
 // Controls
 function onDimension(d: Dimension): void {
@@ -190,7 +228,7 @@ const helpBtn = button("Help", "", () => showHelp(helpBtn, "How to use", GENERAL
 const GENERAL_HELP =
   "Ten wave tanks stack from L1 (Physical) to L10 (Director). Each tank is coupled to its neighbours: bottom-up the instrument sounds into the player, top-down the director conducts. " +
   "Lower layers stabilise the layer above; a loud, unstable layer weakens everything over it. Maslow's levels are fed by pairs of layers and fill when those layers are healthy and stabilised. " +
-  "Fire a pulse with FIRE or by clicking the big tank, try a scenario, and play with the sliders. Every control has a ? button. Sound: the brain plays a jazz band, layer 1 as rhythm section, the others as a choir (every voice has its own HRTF place in the binaural scene); the raw FM sound of all layers is under General audio settings.";
+  "Fire a pulse with FIRE or by tapping the big tank (drag to scratch ripples into any tank), try a scenario, and play with the sliders. Every control has a ? button. Sound: the brain plays a jazz band, layer 1 as rhythm section, the others as a choir (every voice has its own HRTF place in the binaural scene); the raw FM sound of all layers is under General audio settings.";
 
 const mcBtn = button("Monte Carlo: Start", "mc", () => exerciser.toggle());
 const askBtn = button("Ask me now", "", () => exerciser.askNow());
@@ -233,8 +271,8 @@ $("matrix-help").append(
 $("monitor-help").append(
   helpButton("Wave-tank monitor", "Every layer is an FM voice driven by measurements of its tank: pitch = measured frequency, loudness = amplitude, brightness = peakiness, harmonic ratio = phase lock with neighbours. A sudden velocity jump is a spike: the LED flashes and a bright pluck sounds. The number under each LED counts spikes. The graph is the live spectrum. The pitch scale is a fixed time-scaling, so it shows relative, not physical, frequencies."),
 );
-$("tank-help").append(helpButton("Ripple tank", "The wave medium of the selected layer (red-ish and blue-ish tones are positive and negative displacement). Click anywhere to drop a pulse. In 1D it is drawn as a string; in 3D the middle slice is shown."));
-$("thumbs-help").append(helpButton("All ten tanks", "Click a thumbnail to select that layer. Watch waves cross from tank to tank through the coupling sliders."));
+$("tank-help").append(helpButton("Ripple tank", "The wave medium of the selected layer (red-ish and blue-ish tones are positive and negative displacement). Tap to drop a pulse, or drag your finger (mouse) through the water to scratch ripples into it, as in Falstad's ripple tank; the drag works in every projection. In 1D it is drawn as a string; in 3D the middle slice is shown."));
+$("thumbs-help").append(helpButton("All ten tanks", "Click a thumbnail to select that layer, or drag across one to scratch ripples straight into that layer. Watch waves cross from tank to tank through the coupling sliders."));
 $("scope-help").append(helpButton("Amplitude scope", "RMS amplitude of every layer over the last few seconds, in layer colours. Instabilities and cascades show up here before they are visible in the pyramid."));
 
 // Main loop
