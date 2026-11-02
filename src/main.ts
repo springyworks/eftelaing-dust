@@ -7,7 +7,9 @@ import { proveLearning } from "./proof";
 import { Scope, TankView } from "./render";
 import { buildQuickChat } from "./quickchat";
 import { startRemote } from "./remote";
-import { buildVoicePanel } from "./voicepanel";
+import { BeatLattice, Groove } from "./beat";
+import { Tesseract } from "./tesseract";
+import { buildVoicePanel, type BeatPos } from "./voicepanel";
 import { Stack3D } from "./stack3d";
 import { Simulation, type MemoryMode, type Vec3 } from "./sim";
 import { buildControls, helpButton, hideHelp, showHelp } from "./ui";
@@ -192,6 +194,7 @@ setSnapshot(() => ({
   stability: Array.from(sim.stability, (v) => Number(v.toFixed(3))),
   soundOn: audio.enabled,
   voice: voicePanel.info(),
+  beat: beatInfo(),
   learning: { memory: sim.memory, dopa: Number(sim.dopa.toFixed(2)), rewards: sim.rewards, links: Array.from({ length: NUM_LAYERS - 1 }, (_, l) => Number(sim.learned(l).toFixed(2))) },
 }));
 const toast = document.createElement("div");
@@ -199,7 +202,7 @@ toast.style.cssText = "position:fixed;left:50%;top:10px;transform:translateX(-50
 document.body.append(toast);
 let toastTimer = 0;
 startRemote(params, {
-  snapshot: () => ({ style: audio.band?.styleInfo ?? "", phrase: audio.band?.phraseInfo ?? "", chord: audio.chord, instruments: audio.band?.patchInfo ?? "", personality: audio.band?.personalityInfo ?? "", soundOn: audio.enabled, voice: voicePanel.info(), learning: { memory: sim.memory, dopa: Number(sim.dopa.toFixed(2)), rewards: sim.rewards } }),
+  snapshot: () => ({ style: audio.band?.styleInfo ?? "", phrase: audio.band?.phraseInfo ?? "", chord: audio.chord, instruments: audio.band?.patchInfo ?? "", personality: audio.band?.personalityInfo ?? "", soundOn: audio.enabled, voice: voicePanel.info(), beat: beatInfo(), learning: { memory: sim.memory, dopa: Number(sim.dopa.toFixed(2)), rewards: sim.rewards } }),
   applied: () => controls.syncAll(),
   say: (text) => {
     toast.textContent = text;
@@ -349,7 +352,59 @@ typeIn.addEventListener("keydown", (e) => {
 });
 $("type-help").append(helpButton("Type into layer 1", "Every character you type is a pulse in the Physical tank (layer 1), at a place and strength set by the character. The band plays it at once as a note of the current scale (the same letter is always the same degree) in the lead instrument; three slots later the brain answers: the loudest layer sings a note back, and the keys follow with a stab. Raw FM mode plucks layer 1's own voice instead. In every audio mode you can still hear the internal MIDI doings and the raw layer FM. Enter clears the field."));
 
+const lattice = new BeatLattice();
+const groove = new Groove();
+const cube = new Tesseract();
+let freeBeat = 0;
+let beatTick = 0;
+let lastBeatReward = -1e9;
+let beatRewards = 0;
+
+/** The machine beat as the listener hears it `ago` seconds ago; falls back to the free-running lattice while sound is off. */
+function beatPos(ago: number): BeatPos {
+  const h = audio.heardTime;
+  const b = audio.enabled && h !== null ? audio.band?.beatAt(h - ago) ?? null : null;
+  if (b) return { ...b, audible: true };
+  const bpm = audio.band?.bpm ?? params.tempo;
+  const ph = ((((lattice.phase[0] ?? 0) / (2 * Math.PI) - (ago * bpm) / 60) % 1) + 1) % 1;
+  return { phase: ph, beat: freeBeat & 3, bar: freeBeat >> 2, audible: false };
+}
+
+function beatStep(dt: number): void {
+  const bpm = audio.band?.bpm ?? params.tempo;
+  const b = beatPos(0);
+  const crossed = lattice.step(dt, bpm, b.audible ? b.phase : null, b.bar);
+  if (!b.audible && crossed.includes(0)) freeBeat++;
+  cube.push(sim, dt, b.phase);
+  if (++beatTick % 60 === 0) {
+    // the sand memory sets how tightly each link carries the beat
+    for (let l = 0; l < NUM_LAYERS - 1; l++) lattice.links[l] = Math.min(6, Math.max(0.8, 0.6 + 2.2 * sim.learned(l)));
+  }
+  if (params.running && params.beatDrive > 0) {
+    for (const l of crossed) {
+      const a = l * 1.7;
+      sim.fire(l, [0.5 + 0.15 * Math.sin(a), 0.5 + 0.15 * Math.cos(a * 1.3), 0.5], params.beatDrive * (b.beat === 0 ? 0.35 : 0.18));
+    }
+  }
+  for (let l = 0; l < NUM_LAYERS; l++) stack.pulse[l] = lattice.level(l);
+}
+
+function beatInfo(): Record<string, unknown> {
+  return { direction: lattice.dir > 0 ? "up" : "down", latticeOrder: Number(lattice.order.toFixed(2)), links: Array.from(lattice.links, (v) => Number(v.toFixed(2))), beatRewards, cube: cube.info() };
+}
+
 const voicePanel = buildVoicePanel($("voicebox"), {
+  lattice,
+  groove,
+  cube,
+  beatPos,
+  onBeat: () => {
+    const now = performance.now();
+    if (now - lastBeatReward < 1500) return;
+    lastBeatReward = now;
+    beatRewards++;
+    sim.reward(0.15, 0);
+  },
   strike: (x, y, amp) => sim.fire(0, [x, y, 0.5], amp),
   note: (midi, vel, monitor) => audio.voiceNote(midi, vel, monitor),
   hit: (vel, bright) => audio.voiceHit(vel, bright),
@@ -405,6 +460,7 @@ function stepFrame(n: number): void {
 }
 
 let lastFrame = performance.now();
+let beatLast = performance.now();
 let lastObserve = lastFrame;
 
 // The learned wiring survives a reload: the memory mode, the per-link gains and the sand beds (the sand memory).
@@ -539,7 +595,6 @@ function drawLearning(): void {
 function tick(): void {
   const nowMs = performance.now();
   exerciser.update(Math.min(0.1, (nowMs - lastFrame) / 1000));
-  voicePanel.update(Math.min(0.1, (nowMs - lastFrame) / 1000));
   lastFrame = nowMs;
   if (params.running) {
     accumulator += params.speed;
@@ -557,6 +612,9 @@ function tick(): void {
     audio.update(sim, params, selected);
     for (let l = 0; l < NUM_LAYERS; l++) if ((sim.spikes[l] ?? 0) > 0) leds[l]?.dot.classList.add("on");
   }
+  beatStep(Math.min(0.1, (nowMs - beatLast) / 1000));
+  beatLast = nowMs;
+  voicePanel.update();
   const gain = 2.2;
   currentBig.draw(sim, gain, params.projection);
   thumbs.forEach((t) => t.view.draw(sim, gain, params.projection));

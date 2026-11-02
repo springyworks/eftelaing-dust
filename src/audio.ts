@@ -224,6 +224,12 @@ export class WaveMonitor {
   private readonly meterBuf = new Float32Array(1024);
   analyser: AnalyserNode | null = null;
   enabled = false;
+
+  /** The audio time of what the listener hears now (the output latency is already subtracted); null before sound was started. */
+  get heardTime(): number | null {
+    const c = this.ctx;
+    return c ? c.currentTime - (c.outputLatency || c.baseLatency || 0) : null;
+  }
   chord = "";
   readonly pitchHz = new Float32Array(NUM_LAYERS);
   readonly index = new Float32Array(NUM_LAYERS);

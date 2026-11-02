@@ -33,6 +33,8 @@ export class Stack3D {
   yaw = 0.6;
   pitch = 0.75;
   zoom = 1;
+  /** 0..1 per layer: how much each layer is on the beat right now (a white glow on its rim). */
+  readonly pulse = new Float32Array(NUM_LAYERS);
   private dragging = false;
   private moved = 0;
   private lastX = 0;
@@ -187,6 +189,12 @@ export class Stack3D {
       ctx.lineWidth = 1 + Math.min(5, Math.sqrt(sim.rms[l] ?? 0) * 7);
       ctx.strokeStyle = l === selected ? "#ffffff" : `rgb(${col[0]},${col[1]},${col[2]})`;
       ctx.stroke();
+      const beat = (this.pulse[l] ?? 0) ** 3;
+      if (beat > 0.05) {
+        ctx.lineWidth = 2 + 4 * beat;
+        ctx.strokeStyle = `rgba(255,245,210,${0.85 * beat})`;
+        ctx.stroke();
+      }
       ctx.fillStyle = l === selected ? "#ffffff" : "#9fb0c8";
       ctx.font = "11px system-ui, sans-serif";
       ctx.fillText(`L${l + 1}`, p1.x + 6, p1.y + 4);

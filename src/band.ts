@@ -150,6 +150,7 @@ export class Band {
   private cur: Chord;
   private step = 0;
   private next = 0;
+  private readonly beats: { t: number; n: number }[] = [];
   private lastBass = 38;
   private fillRolled = false;
   private leadMidi = 69;
@@ -246,6 +247,17 @@ export class Band {
     return t;
   }
 
+  /** Where the (audible) grid is at `time`: phase in the beat (0..1), beat in the bar (0..3) and the bar counter; null when stopped. */
+  beatAt(time: number): { phase: number; beat: number; bar: number } | null {
+    let i = this.beats.length - 1;
+    while (i >= 0 && (this.beats[i]?.t ?? Infinity) > time) i--;
+    const a = this.beats[i];
+    if (!a || time - a.t > 1.5) return null;
+    const b = this.beats[i + 1];
+    const dur = b ? b.t - a.t : 60 / this.bpm;
+    return { phase: clamp((time - a.t) / dur, 0, 1), beat: a.n & 3, bar: a.n >> 2 };
+  }
+
   /** A spike or fired pulse in a layer: an accented comping stab and ride hit on the next grid slot. */
   accent(layer: number, mag: number): void {
     if (this.accents.length < 8) this.accents.push({ layer, mag });
@@ -321,6 +333,10 @@ export class Band {
     const silent = p.audioMode === "raw";
     while (this.next < now + LOOKAHEAD) {
       const dur = this.stepDur(this.step, this.swingNow);
+      if ((this.step & 1) === 0) {
+        this.beats.push({ t: this.next, n: this.step >> 1 });
+        if (this.beats.length > 16) this.beats.shift();
+      }
       this.play(this.next, dur, p, f, silent);
       this.next += dur;
       this.step++;
