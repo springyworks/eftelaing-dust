@@ -147,6 +147,9 @@ export interface PersonalityData {
   liking: Record<StyleId, number>; // -1..1, what the human liked while this style played
   mastery: Record<StyleId, number>; // 0..1, practice per style
   lessons: number; // ratings received
+  taste?: Record<string, number>; // -1..1 per pattern ("riff:3", "bass:1", "prog:funk:0"), from praise
+  praised?: number;
+  retries?: number;
 }
 
 const zero = (v: number): Record<StyleId, number> => ({ swing: v, bebop: v, fusion: v, funk: v, bossa: v });
@@ -159,6 +162,10 @@ export class Personality {
   lessons = 0;
   liking = zero(0);
   mastery = zero(0.15);
+  /** What the human liked per pattern (riff rhythm, bass line, comping, kick, progression); biases what the band picks next. */
+  taste: Record<string, number> = {};
+  praised = 0;
+  retries = 0;
   /** The human said "same tune again": the next style change is forced and a fresh progression is chosen. */
   restless = false;
   /** The human asked for a style by name ("Want funk"): the band moves there at the next chord change. */
@@ -181,6 +188,9 @@ export class Personality {
             this.liking[s] = clamp(Number(d.liking?.[s]) || 0, -1, 1);
             this.mastery[s] = clamp(Number(d.mastery?.[s]) || 0.15, 0, 1);
           }
+          this.praised = Number(d.praised) || 0;
+          this.retries = Number(d.retries) || 0;
+          for (const [k, v] of Object.entries(d.taste ?? {})) if (Number.isFinite(v)) this.taste[k] = clamp(v, -1, 1);
         }
       }
     } catch {
@@ -238,6 +248,54 @@ export class Personality {
     this.save();
   }
 
+  /**
+   * Sugar: the human says "nice" to what plays right now. `amount` (about 1 to 3, stacked by repeated clicks) raises the liking
+   * of the style, the taste for every pattern that was sounding, and the skills a little. Learning never stops.
+   */
+  reward(style: StyleId, amount: number, keys: readonly string[], rate: number): void {
+    const a = clamp(amount, 0, 3) * clamp(rate, 0.25, 2);
+    this.praised++;
+    this.restless = false;
+    this.liking[style] = clamp(this.liking[style] + 0.1 * a, -1, 1);
+    this.skill += (1 - this.skill) * 0.015 * a;
+    this.chops += (1 - this.chops) * 0.01 * a;
+    this.mastery[style] += (1 - this.mastery[style]) * 0.03 * a;
+    for (const k of keys) this.taste[k] = clamp((this.taste[k] ?? 0) + 0.25 * a, -1, 1);
+    this.dirty = true;
+    this.save();
+  }
+
+  /**
+   * "Try again": no punishment. Skill and mastery never go down; the patterns that were sounding are just a little less
+   * likely to come back, and the band gets curious about something else.
+   */
+  retry(style: StyleId, amount: number, keys: readonly string[], rate: number): void {
+    const a = clamp(amount, 0, 3) * clamp(rate, 0.25, 2);
+    this.retries++;
+    this.restless = a >= 1.5;
+    this.liking[style] = clamp(this.liking[style] - 0.03 * a, -1, 1);
+    for (const k of keys) this.taste[k] = clamp((this.taste[k] ?? 0) - 0.15 * a, -1, 1);
+    this.dirty = true;
+    this.save();
+  }
+
+  /** The human plays along (scratches the tanks): the brain watches and picks up a little vocabulary. */
+  watch(): void {
+    this.chops += (1 - this.chops) * 0.0008;
+    this.dirty = true;
+  }
+
+  /** Picks one of n patterns named prefix0..prefix(n-1); `u` is a 0..1 sample, liked patterns get more weight. */
+  pick(prefix: string, n: number, u: number): number {
+    const w = Array.from({ length: n }, (_, i) => Math.exp(1.6 * (this.taste[`${prefix}${i}`] ?? 0)));
+    let x = clamp(u, 0, 0.9999) * w.reduce((a, b) => a + b, 0);
+    for (let i = 0; i < n; i++) {
+      x -= w[i] ?? 0;
+      if (x < 0) return i;
+    }
+    return n - 1;
+  }
+
   /** What the brain has become so far, as a word. */
   stage(): string {
     const m = (this.skill + this.chops) / 2;
@@ -249,7 +307,7 @@ export class Personality {
     const likes = STYLE_IDS.filter((s) => this.liking[s] > 0.15)
       .sort((a, b) => this.liking[b] - this.liking[a])
       .map((s) => STYLES[s].name.toLowerCase());
-    return `${this.stage()} · ${Math.round(this.seconds / 60)} min played · swing skill ${pct(this.skill)} · licks ${pct(this.chops)} · ${STYLES[style].name} mastery ${pct(this.mastery[style])}${likes.length ? ` · you liked: ${likes.join(", ")}` : ""}`;
+    return `${this.stage()} · ${Math.round(this.seconds / 60)} min played · swing skill ${pct(this.skill)} · licks ${pct(this.chops)} · ${STYLES[style].name} mastery ${pct(this.mastery[style])}${likes.length ? ` · you liked: ${likes.join(", ")}` : ""}${this.praised + this.retries > 0 ? ` · nice ${this.praised}× / try again ${this.retries}×` : ""}`;
   }
 
   clear(): void {
@@ -260,6 +318,9 @@ export class Personality {
     this.lessons = 0;
     this.liking = zero(0);
     this.mastery = zero(0.15);
+    this.taste = {};
+    this.praised = 0;
+    this.retries = 0;
     this.save();
   }
 
@@ -271,7 +332,7 @@ export class Personality {
   save(): void {
     this.lastSave = Date.now();
     this.dirty = false;
-    const data: PersonalityData = { v: 1, seconds: this.seconds, bars: this.bars, skill: this.skill, chops: this.chops, liking: this.liking, mastery: this.mastery, lessons: this.lessons };
+    const data: PersonalityData = { v: 1, seconds: this.seconds, bars: this.bars, skill: this.skill, chops: this.chops, liking: this.liking, mastery: this.mastery, lessons: this.lessons, taste: this.taste, praised: this.praised, retries: this.retries };
     try {
       localStorage.setItem(STORE, JSON.stringify(data));
     } catch {

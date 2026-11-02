@@ -429,6 +429,13 @@ export class WaveMonitor {
     this.pluck(layer, 3, 0.8);
   }
 
+  /** A finger drawing in tank `layer`: the band plays it as a note (in any mode that has the band). */
+  scratch(layer: number, x: number, y: number, speed: number): void {
+    const p = this.lastParams;
+    if (!this.enabled || !p || p.audioMode === "raw") return;
+    this.band?.scratch(layer, x, y, speed);
+  }
+
   // A character typed into layer 1: the band plays it and the brain answers in MIDI; the raw FM voice of layer 1 plucks too.
   typeChar(code: number): void {
     const p = this.lastParams;

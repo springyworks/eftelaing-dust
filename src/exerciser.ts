@@ -536,6 +536,14 @@ export class Exerciser {
     else this.mode = "off";
   }
 
+  /** A "nice" (true) or "try again" (false) click from the top bar: a soft vote for the current setting in the taste model. */
+  cheer(nice: boolean): void {
+    this.model.add(this.vector(), nice ? 1 : 0.25);
+    this.save();
+    this.draw();
+    this.updateStatus(true);
+  }
+
   /** Records a rating for the setting as it is right now. */
   rate(r: Rating): void {
     this.teachHook?.(r, [...this.hints]);

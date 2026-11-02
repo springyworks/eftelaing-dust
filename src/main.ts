@@ -147,6 +147,8 @@ function attachScratch(canvas: HTMLCanvasElement, view: () => TankView, big: boo
       const f = i / steps;
       sim.scratch(view().layer, [last[0] + (p[0] - last[0]) * f, last[1] + (p[1] - last[1]) * f, 0.5], 0.1);
     }
+    const r = canvas.getBoundingClientRect();
+    audio.scratch(view().layer, (e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height, Math.min(1, dist * 8));
     last = p;
   });
   const end = (e: PointerEvent): void => {
@@ -255,7 +257,31 @@ exerciser.onState = (running) => {
   mcBtn.classList.toggle("on", running);
   if (running && !audio.enabled) void toggleSound();
 };
-toolbar.append(playBtn, stepBtn, resetBtn, fireBtn, mcBtn, askBtn, soundBtn, helpBtn);
+// Sugar and encouragement: "Nice" rewards what plays now, "Try again" is never punishment. Clicks in quick succession stack.
+let streak = 0;
+let streakAt = 0;
+const rewardNote = document.createElement("span");
+rewardNote.className = "reward-note";
+rewardNote.textContent = "Teach the brain: click Nice as often as you like when it sounds good, Try again when it does not.";
+function encourage(nice: boolean, btn: HTMLButtonElement): void {
+  const now = performance.now();
+  streak = now - streakAt < 4000 ? Math.min(streak + 1, 6) : 1;
+  streakAt = now;
+  const amount = 1 + (streak - 1) * 0.4;
+  audio.band?.encourage(nice, amount);
+  exerciser.cheer(nice);
+  btn.classList.add("glow");
+  window.setTimeout(() => btn.classList.remove("glow"), 220);
+  const cheers = ["Nice!", "Lovely!", "Yes, keep going!", "Beautiful!", "Heavenly!", "More of that!"];
+  rewardNote.textContent = nice
+    ? `${cheers[Math.min(streak, cheers.length) - 1]} ${streak > 1 ? `(x${streak} sugar) ` : ""}${audio.band?.personalityInfo ?? "Turn the sound on and the brain will learn."}`
+    : `No worries, we try again. ${audio.band?.personalityInfo ?? "Turn the sound on and the brain will learn."}`;
+}
+const niceBtn: HTMLButtonElement = button("Nice", "reward nice", () => encourage(true, niceBtn));
+const againBtn: HTMLButtonElement = button("Try again", "reward again", () => encourage(false, againBtn));
+niceBtn.title = "Reward: this sounds good. Click several times for more sugar.";
+againBtn.title = "Not quite: no punishment, the brain just tries something else next time.";
+toolbar.append(niceBtn, againBtn, rewardNote, playBtn, stepBtn, resetBtn, fireBtn, mcBtn, askBtn, soundBtn, helpBtn);
 
 $("tank-tools").append(
   button("Level the sand", "small", () => sim.flattenSand()),

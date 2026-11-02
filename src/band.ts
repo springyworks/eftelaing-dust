@@ -529,9 +529,9 @@ export class Band {
       this.brain.practise(this.style, groove, f.health, this.opts.learn * 2, (4 * 60) / this.bpm);
     }
     if (bar % 2 === 0) {
-      this.bassPat = Math.floor(this.q(3) * FUNK_BASS.length) % FUNK_BASS.length;
-      this.compPat = Math.floor(this.q(4) * CHICKEN.length) % CHICKEN.length;
-      this.kickPat = Math.floor(this.q(5) * KICKS.length) % KICKS.length;
+      this.bassPat = this.brain.pick("bass:", FUNK_BASS.length, this.q(3));
+      this.compPat = this.brain.pick("comp:", CHICKEN.length, this.q(4));
+      this.kickPat = this.brain.pick("kick:", KICKS.length, this.q(5));
     }
     this.phrase = silent ? [] : this.makePhrase(bar, f, th);
     const st = STYLES[this.style];
@@ -593,13 +593,55 @@ export class Band {
     if (next !== this.style || first) {
       this.style = next;
       this.styleSince = bar;
-      this.prog = Math.floor(this.q(8) * progressionCount(next));
+      this.prog = this.brain.pick(`prog:${next}:`, progressionCount(next), this.q(8));
       this.brain.restless = false;
       this.riff = null;
     } else if (bar % 16 === 0 && bar > 0) {
-      this.prog = (this.prog + 1) % progressionCount(this.style);
+      const n = progressionCount(this.style);
+      let p = this.brain.pick(`prog:${this.style}:`, n, this.q(8));
+      if (p === this.prog && n > 1 && (this.brain.restless || (this.brain.taste[`prog:${this.style}:${p}`] ?? 0) <= 0)) p = (p + 1) % n;
+      this.prog = p;
       this.brain.restless = false;
     }
+  }
+
+  /** The names of the patterns that sound right now: what a "nice" or "try again" refers to. */
+  private playingKeys(): string[] {
+    const st = STYLES[this.style];
+    const keys = [`prog:${this.style}:${this.prog}`];
+    if (st.bass === "funk") keys.push(`bass:${this.bassPat}`);
+    if (st.comp === "chicken") keys.push(`comp:${this.compPat}`);
+    if (st.drums !== "swing" && st.drums !== "bossa") keys.push(`kick:${this.kickPat}`);
+    if (this.riff && this.phrase.length > 0 && (st.lead === "funk" || st.lead === "fusion")) keys.push(`riff:${this.riff.rhythm}`);
+    return keys;
+  }
+
+  /** Sugar for the brain: "nice" (positive) or "try again" (not nice, never a punishment) for what plays right now. */
+  encourage(nice: boolean, amount: number): void {
+    const keys = this.playingKeys();
+    if (nice) this.brain.reward(this.style, amount, keys, this.opts.learn * 2);
+    else this.brain.retry(this.style, amount, keys, this.opts.learn * 2);
+  }
+
+  private lastScratch = 0;
+
+  /**
+   * A finger in the sand or water of tank `l` (0..9): x (0..1) picks a note of the current scale, y and the finger speed give
+   * its loudness, and the tank plays it with its own voice (layer 1: the lead, the others: their choir voice), plus a dry
+   * rasp of sand. It goes out over MIDI like every other note, so an external synth plays along.
+   */
+  scratch(l: number, x: number, y: number, speed: number): void {
+    const now = this.ctx.currentTime;
+    if (now - this.lastScratch < 0.09 - 0.04 * clamp(speed, 0, 1)) return;
+    this.lastScratch = now;
+    const pool = this.poolOf(this.cur.scale, 50 + l, 86);
+    const note = pool[clamp(Math.floor(clamp(x, 0, 0.999) * pool.length), 0, pool.length - 1)] ?? 69;
+    const vel = Math.round(clamp(40 + 50 * clamp(speed, 0, 1) + 20 * (1 - clamp(y, 0, 1)), 20, 118));
+    const t = now + 0.01;
+    if (l === 0 || this.lv.choir < 0.05) this.leadNote(t, note, vel, 0.22);
+    else this.choirNote(l, t, note, vel, 0.3);
+    this.noiseBurst(t, this.spat.ride.input, 2200 + 2000 * clamp(speed, 0, 1), 0.05 * (vel / 127), 0.05, 3000);
+    this.brain.watch();
   }
 
   private poolOf(pcs: readonly number[], lo = 54, hi = 92): number[] {
@@ -728,7 +770,7 @@ export class Band {
 
     // Riff: a rhythm, a contour and a repeat count; the riff is kept for two to four bars and transposed onto each chord.
     if (!this.riff || this.riff.left <= 0) {
-      const rhythm = Math.floor(this.q(8) * RIFF_RHYTHMS.length) % RIFF_RHYTHMS.length;
+      const rhythm = this.brain.pick("riff:", RIFF_RHYTHMS.length, this.q(8));
       const hits = (RIFF_RHYTHMS[rhythm] ?? "").split("").filter((c) => c === "x").length;
       this.riff = { rhythm, steps: Array.from({ length: hits }, (_, j) => Math.round((deg[j % 8] ?? 0) / 2)), left: 2 + Math.floor(this.q(9) * 3) };
     }
