@@ -44,6 +44,7 @@ const HINTS = [
   { id: "stiff", group: "Rhythm", label: "Stiff rhythm", tip: "Rhythm: too square", push: [["swing", 1], ["spikeSens", 1]] },
   { id: "messy", group: "Rhythm", label: "Messy rhythm", tip: "Rhythm: no pulse", push: [["swing", -1], ["jazz", 1], ["spikeSens", -1]] },
   { id: "mechanical", group: "Rhythm", label: "Too mechanical", tip: "Sounds like a machine: more human timing, dynamics and loose feel", push: [["bandHuman", 1], ["swing", 1], ["dust", 1]] },
+  { id: "noswing", group: "Rhythm", label: "Not swinging", tip: "It does not swing: triplet feel, ride, ghost notes. Also teaches the brain: it practises swing and leans to the swinging styles", push: [["swing", 1], ["bandGroove", 1], ["bandHuman", 1]] },
   { id: "sloppy", group: "Rhythm", label: "Too sloppy", tip: "Falls apart: tighter timing and even dynamics", push: [["bandHuman", -1], ["dust", -1]] },
   { id: "groove", group: "Rhythm", label: "No groove", tip: "Urban: needs a pocket: ride, bass and swing locked in", push: [["bandDrums", 1], ["bandBass", 1], ["swing", 1]] },
   { id: "busy", group: "Rhythm", label: "Too busy", tip: "Too many notes: give the music room to breathe", push: [["bandDensity", -1], ["bandChoir", -1]] },
@@ -52,6 +53,13 @@ const HINTS = [
   { id: "rushed", group: "Tempo", label: "Rushed", tip: "Too fast, no time to breathe", push: [["tempo", -1]] },
   { id: "samey", group: "Form", label: "Too little variation", tip: "The same thing again and again: themes should develop, instruments and layers should change", push: [["bandVariation", 1], ["bandSwitch", 1], ["bandBrain", 1]] },
   { id: "unstable", group: "Form", label: "No hook / too unstable", tip: "Keeps changing, nothing to hold on to: a theme should recur", push: [["bandVariation", -1], ["bandSwitch", -1]] },
+  { id: "noriffs", group: "Form", label: "No riffs / licks", tip: "The lead plays no fast phrases or riffs: want runs, licks and repeated riffs. Also teaches the brain more vocabulary", push: [["bandRiffs", 1], ["bandDensity", 1]] },
+  { id: "oldband", group: "Form", label: "Same old tune", tip: "An old band playing the same tune: the brain picks another style and chord progression at the next change", push: [["bandVariation", 1], ["bandRiffs", 1]] },
+  { id: "wantbebop", group: "Style", label: "Want bebop", tip: "Teaches the brain to prefer fast bebop with runs and enclosures", push: [] },
+  { id: "wantswing", group: "Style", label: "Want swing", tip: "Teaches the brain to prefer relaxed swing with walking bass and ride", push: [] },
+  { id: "wantfusion", group: "Style", label: "Want fusion", tip: "Teaches the brain to prefer fusion: 16th grooves, bursts, m11 colours", push: [] },
+  { id: "wantfunk", group: "Style", label: "Want funk", tip: "Teaches the brain to prefer funk: the one, ghost notes and riffs", push: [] },
+  { id: "wantbossa", group: "Style", label: "Want bossa", tip: "Teaches the brain to prefer soft bossa", push: [] },
   { id: "jarring", group: "Form", label: "Jarring instrument change", tip: "An instrument swap does not feel musical: swap rarely", push: [["bandSwitch", -1]] },
   { id: "melody", group: "Form", label: "Melody lost", tip: "Theory: the tune is not carried, the lead should lead", push: [["bandLead", 1], ["bandChoir", -1]] },
   { id: "layers", group: "Form", label: "Want more layers", tip: "The whole brain should play more: more choir and brain share", push: [["bandBrain", 1], ["bandChoir", 1]] },
@@ -96,9 +104,15 @@ export class Exerciser {
   private bored = false;
   // Tells which voice dominates the mix and which is buried (set by the app once the band exists).
   private mixHook: (() => { loud: string; quiet: string } | null) | null = null;
+  private teachHook: ((rating: number, hints: readonly string[]) => void) | null = null;
 
   setMixHook(fn: () => { loud: string; quiet: string } | null): void {
     this.mixHook = fn;
+  }
+
+  /** Called with every rating and the hint chips ticked with it, so the band's personality can learn from it. */
+  setTeachHook(fn: (rating: number, hints: readonly string[]) => void): void {
+    this.teachHook = fn;
   }
 
   constructor(
@@ -524,6 +538,7 @@ export class Exerciser {
 
   /** Records a rating for the setting as it is right now. */
   rate(r: Rating): void {
+    this.teachHook?.(r, [...this.hints]);
     this.model.add(this.vector(), r);
     if (r === 0.25) this.bored = true;
     if (!this.auto && (this.hints.size > 0 || this.bored)) {

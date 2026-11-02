@@ -176,6 +176,9 @@ setSnapshot(() => ({
   bpm: audio.band ? Math.round(audio.band.bpm) : null,
   instruments: audio.band?.patchInfo ?? "",
   theme: audio.band?.themeInfo ?? "",
+  style: audio.band?.styleInfo ?? "",
+  phrase: audio.band?.phraseInfo ?? "",
+  personality: audio.band?.personalityInfo ?? "",
   alignment: Number(sim.alignment.toFixed(3)),
   rms: Array.from(sim.rms, (v) => Number(v.toFixed(3))),
   stability: Array.from(sim.stability, (v) => Number(v.toFixed(3))),
@@ -183,6 +186,7 @@ setSnapshot(() => ({
 }));
 const exerciser = new Exerciser($("exerciser"), params, () => controls.syncAll());
 exerciser.setMixHook(() => audio.band?.dominant() ?? null);
+exerciser.setTeachHook((r, h) => audio.band?.teach(r, h));
 $("exerciser-help").append(
   helpButton("Monte Carlo exerciser", "Let the machine play the sliders for you. It glides to a new random-ish setting, you listen and watch, and a popup asks Boring, No, Maybe or Yes (keys B, N, M, Y); tap any of the chips first (grouped as Dynamics, Voices, Space, Rhythm, Tempo, Form and Harmony: too flat or wild, dull or harsh, a voice dominates or is lost, bass thin or boomy, too washy or dry, stiff or messy, too mechanical or sloppy, no groove, too busy or sparse, drags or rushed, too little variation or no hook, jarring instrument change, melody lost, want more layers, too tense or too plain harmony) to steer the next proposal. The chips move band sliders of the brain: variation, human feel, instrument changes, harmonic colour and the voice levels (the loudest or the quietest voice is found from the live mix). Sound switches on when you start, with optional stronger answers Hellish (L) and Heavenly (H) for the truly awful and the truly beautiful. A Gaussian-process model learns from every answer which regions of the slider space you like, and proposes more of those. Move any slider yourself while it runs and the exerciser obeys at once, then slowly forgets your move (Respect my moves). Lock sliders you want to keep by clicking their row in the taste profile. Your ratings are kept in this browser."),
 );
@@ -364,7 +368,7 @@ function tick(): void {
       const cues = binauralCues(sv.az, sv.el);
       $("cues").innerHTML =
         `Selected: <b>L${selected + 1}</b><br>azimuth <b>${sv.az.toFixed(0)}°</b> elevation <b>${sv.el.toFixed(0)}°</b><br>distance <b>${sv.r.toFixed(1)} m</b><br>` +
-        `ITD <b>${Math.abs(cues.itdUs).toFixed(0)} µs</b> ${cues.itdUs >= 0 ? "(right ear first)" : "(left ear first)"}<br>ILD <b>${cues.ildDb.toFixed(1)} dB</b><br>pinna notch <b>${(cues.notchHz / 1000).toFixed(1)} kHz</b><br>chord <b>${audio.chord}</b><br>theme <b>${audio.band?.themeInfo ?? "-"}</b><br>instruments <b>${audio.band?.patchInfo || "-"}</b>${audio.band?.echoInfo ? `<br>typing <b>${audio.band.echoInfo}</b>` : ""}<br>band <b>${audio.band ? audio.band.bpm.toFixed(0) : "-"} bpm</b>${audio.band?.midiName ? `<br>MIDI <b>${audio.band.midiName}</b>` : ""}`;
+        `ITD <b>${Math.abs(cues.itdUs).toFixed(0)} µs</b> ${cues.itdUs >= 0 ? "(right ear first)" : "(left ear first)"}<br>ILD <b>${cues.ildDb.toFixed(1)} dB</b><br>pinna notch <b>${(cues.notchHz / 1000).toFixed(1)} kHz</b><br>chord <b>${audio.chord}</b><br>theme <b>${audio.band?.themeInfo ?? "-"}</b><br>style <b>${audio.band?.styleInfo ?? "-"}</b><br>phrase <b>${audio.band?.phraseInfo || "-"}</b><br>brain <b>${audio.band?.personalityInfo ?? "-"}</b><br>instruments <b>${audio.band?.patchInfo || "-"}</b>${audio.band?.echoInfo ? `<br>typing <b>${audio.band.echoInfo}</b>` : ""}<br>band <b>${audio.band ? audio.band.bpm.toFixed(0) : "-"} bpm</b>${audio.band?.midiName ? `<br>MIDI <b>${audio.band.midiName}</b>` : ""}`;
     }
     $("ro-relief").textContent = sim.sandRelief(selected).toFixed(3);
     $("ro-sand").textContent = sim.sandMass(selected).toFixed(1);

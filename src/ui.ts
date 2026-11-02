@@ -1,6 +1,6 @@
 // Control panel construction with per-control help popups.
 
-import type { AudioMode, ContextMode, MidiOut, Dimension, ListenMode, MatrixView, Params, Projection, SpatialMode } from "./model";
+import type { AudioMode, BandStyle, ContextMode, MidiOut, Dimension, ListenMode, MatrixView, Params, Projection, SpatialMode } from "./model";
 
 export type NumKey = Exclude<{ [K in keyof Params]: Params[K] extends number ? K : never }[keyof Params], "dimension">;
 
@@ -16,7 +16,7 @@ export interface SliderSpec {
 
 interface SelectSpec {
   readonly kind: "select";
-  readonly key: "dimension" | "context" | "listen" | "matrixView" | "projection" | "spatial" | "audioMode" | "midiOut";
+  readonly key: "dimension" | "context" | "listen" | "matrixView" | "projection" | "spatial" | "audioMode" | "midiOut" | "bandStyle";
   readonly label: string;
   readonly options: readonly { value: string; text: string }[];
   readonly help: string;
@@ -185,7 +185,24 @@ const GROUPS: readonly Group[] = [
       { kind: "slider", key: "bandHuman", label: "Human feel (0 machine)", min: 0, max: 1, step: 0.01, help: "0 = machine-exact timing and equal velocities (the mechanical sound). 1 = loose, laid-back and breathing: timing wanders with the wave fields, velocities swell and fade, the lead sits a little behind the beat." },
       { kind: "slider", key: "bandSwitch", label: "Instrument changes (0 never)", min: 0, max: 1, step: 0.01, help: "How often a voice may swap its instrument. The new instrument is read from the driving layer, then handed over slowly: the old one fades out while the new one fades in over two bars, one voice at a time, at phrase boundaries. 0 freezes the instruments." },
       { kind: "slider", key: "bandColor", label: "Harmonic colour (sweet → tense)", min: 0, max: 1, step: 0.01, help: "Biases the chords the brain picks from its Maslow fulfilment. 0.5 = as the brain feels it. Lower: resolved sweet chords (Cmaj9, A13). Higher: tense altered chords (Cmaj9#11, A7b9b13)." },
-      { kind: "slider", key: "tempo", label: "Band tempo (bpm)", min: 60, max: 160, step: 1, help: "Base tempo of the band. A busy bottom layer pushes it up to about 6% faster, a quiet one slows it by the same amount. Swing is set in the jazz group." },
+      {
+        kind: "select",
+        key: "bandStyle",
+        label: "Band style",
+        options: [
+          { value: "auto", text: "Auto: the brain picks (layers + what you liked)" },
+          { value: "swing", text: "Swing (walking bass, ride, triplet feel)" },
+          { value: "bebop", text: "Bebop (fast, runs, enclosures)" },
+          { value: "fusion", text: "Fusion (16th grooves, bursts, m11 colours)" },
+          { value: "funk", text: "Funk (the one, ghost notes, riffs)" },
+          { value: "bossa", text: "Bossa (straight, clave, soft)" },
+        ],
+        help: "Each style is a complete way of playing: swing amount, tempo, bass pattern, comping rhythm, drum groove, the kind of lead phrases and its own chord progressions. Auto lets the brain choose every eight to sixteen bars from its layers (activity, peakiness, tension, upper-layer energy) and from what you liked before. The others lock one style.",
+      },
+      { kind: "slider", key: "bandRiffs", label: "Licks and riffs (0 plain theme)", min: 0, max: 1, step: 0.01, help: "How often the lead plays a phrase instead of the plain layer-read theme: fast bebop runs with enclosures, 16th-note fusion bursts, repeated funk riffs. The notes still come from the layers; this only decides how much of the time the soloist is busy." },
+      { kind: "slider", key: "bandGroove", label: "Groove (ghost notes, syncopation)", min: 0, max: 1, step: 0.01, help: "Ghost snares, kick feathering, bass skips, anticipated chord stabs and 16th-note hat work. 0 is square and plain, 1 is a pocket full of small notes." },
+      { kind: "slider", key: "bandLearn", label: "Brain learns (0 frozen)", min: 0, max: 1, step: 0.01, help: "Learning rate of the brain's personality: its swing skill, lick vocabulary and per-style mastery grow while it plays (faster when the layers are in sync and healthy) and with your Yes ratings; your No, Boring and Hellish pull the styles it likes down. It is saved in this browser. 0 keeps it as it is." },
+      { kind: "slider", key: "tempo", label: "Band tempo (bpm)", min: 60, max: 160, step: 1, help: "Base tempo of the band, multiplied by the style (bebop about 30% faster, bossa 12% slower). A busy bottom layer pushes it up to about 6% faster, a quiet one slows it by the same amount. Swing is set in the jazz group." },
       {
         kind: "select",
         key: "midiOut",
@@ -331,6 +348,8 @@ export function buildControls(root: HTMLElement, params: Params, onDimension: (d
             params.audioMode = select.value as AudioMode;
           } else if (spec.key === "midiOut") {
             params.midiOut = select.value as MidiOut;
+          } else if (spec.key === "bandStyle") {
+            params.bandStyle = select.value as BandStyle;
           } else {
             params.matrixView = select.value as MatrixView;
           }

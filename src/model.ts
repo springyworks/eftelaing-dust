@@ -58,6 +58,7 @@ export type Projection = "wave" | "sand" | "both" | "iso" | "profile";
 export type SpatialMode = "stereo" | "binaural";
 export type AudioMode = "raw" | "brain" | "layer1" | "both";
 export type MidiOut = "off" | "on";
+export type BandStyle = "auto" | "swing" | "bebop" | "fusion" | "funk" | "bossa";
 
 export interface Params {
   running: boolean;
@@ -108,6 +109,10 @@ export interface Params {
   bandHuman: number; // 0 = machine-exact timing and dynamics, 1 = loose, human
   bandSwitch: number; // how often an instrument is swapped (0 = never), swaps are always slow handovers
   bandColor: number; // harmonic colour: 0 sweet and resolved, 0.5 as the brain feels it, 1 tense and altered
+  bandStyle: BandStyle; // auto = the brain picks the style from its layers and from what you liked
+  bandRiffs: number; // how often the lead plays fast licks and riffs instead of the plain theme
+  bandGroove: number; // ghost notes, syncopation, anticipations and 16th-note hat work in bass, drums and keys
+  bandLearn: number; // learning rate of the brain's personality (0 = it stays as it is)
   midiOut: MidiOut; // also send the band as MIDI to the first Web MIDI output
   swing: number; // 0 = plucks sound immediately, >0 = quantised to a swung eighth-note grid
 }
@@ -163,10 +168,14 @@ export const DEFAULT_PARAMS: Params = {
   bandHuman: 0.5,
   bandSwitch: 0.5,
   bandColor: 0.5,
+  bandStyle: "auto",
+  bandRiffs: 0.6,
+  bandGroove: 0.6,
+  bandLearn: 0.5,
 };
 
 // Settings that describe how the human sees and hears the instrument; scenarios leave them alone.
-export const PRESENTATION_KEYS = ["volume", "alcCeiling", "listen", "fmDepth", "spikeSens", "projection", "spatial", "width", "reverb", "jazz", "swing", "audioMode", "tempo", "midiOut", "bandBrain", "rawLevel", "bandLevel", "bandDensity", "bandChoir", "bandBass", "bandKeys", "bandLead", "bandDrums", "bandVariation", "bandHuman", "bandSwitch", "bandColor", "matrixView"] as const;
+export const PRESENTATION_KEYS = ["volume", "alcCeiling", "listen", "fmDepth", "spikeSens", "projection", "spatial", "width", "reverb", "jazz", "swing", "audioMode", "tempo", "midiOut", "bandBrain", "rawLevel", "bandLevel", "bandDensity", "bandChoir", "bandBass", "bandKeys", "bandLead", "bandDrums", "bandVariation", "bandHuman", "bandSwitch", "bandColor", "bandStyle", "bandRiffs", "bandGroove", "bandLearn", "matrixView"] as const;
 
 export interface Scenario {
   readonly id: string;

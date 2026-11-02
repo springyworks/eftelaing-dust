@@ -43,9 +43,9 @@ export function chordAt(time: number): { index: number; name: string } {
 }
 
 // Snaps a frequency towards the nearest tone of the chord; amount 0 = untouched, 1 = fully snapped.
-export function snapHz(hz: number, amount: number, chord: number): number {
+export function snapHz(hz: number, amount: number, chord: number | readonly number[]): number {
   if (amount <= 0) return hz;
-  const tones = CHORDS[chord]?.tones ?? [0];
+  const tones = typeof chord === "number" ? CHORDS[chord]?.tones ?? [0] : chord;
   const semis = 12 * Math.log2(hz / ROOT_HZ);
   const base = Math.round(semis);
   let best = base;
@@ -344,12 +344,13 @@ export class WaveMonitor {
     const live = !!ctx && this.enabled && !!this.band;
     if (live && ctx) this.band?.update(sim, p, ctx.currentTime, this.scene, this.pitchHz);
     const chord = live && this.band ? { index: this.band.chordIndex, name: this.band.chordName } : chordAt(clock);
+    const snapTo: number | readonly number[] = live && this.band ? this.band.snapTones : chord.index;
     this.chord = chord.name;
     // Features and scene positions are exposed for the panels even when audio is off.
     for (let l = 0; l < NUM_LAYERS; l++) {
       const raw = clamp((sim.freq[l] ?? 0.05) * HZ_PER_OMEGA, 40, 1600);
       const lock = Math.max(sim.lock[l] ?? 0, l > 0 ? sim.lock[l - 1] ?? 0 : 0);
-      this.pitchHz[l] = snapHz(raw, p.jazz, chord.index);
+      this.pitchHz[l] = snapHz(raw, p.jazz, snapTo);
       this.index[l] = p.fmDepth * (0.3 + 0.6 * ((sim.crest[l] ?? 1) - 1) + 1.5 * (1 - lock));
       const sv = this.scene[l];
       if (sv) {
@@ -401,14 +402,14 @@ export class WaveMonitor {
     const p = this.lastParams;
     if (p && p.audioMode !== "raw" && pitchMul === 1) this.band?.accent(layer, magnitude);
     if (p?.audioMode === "brain" || p?.audioMode === "layer1") return;
-    const swing = p?.swing ?? 0;
+    const swing = this.band ? this.band.swingNow : p?.swing ?? 0;
     const slot = this.band ? this.band.nextSlot(ctx.currentTime, swing) : swingSlot(ctx.currentTime, swing);
     const t = swing > 0 ? Math.min(slot, ctx.currentTime + 0.4) : ctx.currentTime;
     const car = ctx.createOscillator();
     const mod = ctx.createOscillator();
     const modGain = ctx.createGain();
     const env = ctx.createGain();
-    const hz = snapHz((this.pitchHz[layer] || 110) * 2 * pitchMul, p?.jazz ?? 0, this.band?.chordIndex ?? chordAt(t).index);
+    const hz = snapHz((this.pitchHz[layer] || 110) * 2 * pitchMul, p?.jazz ?? 0, this.band ? this.band.snapTones : chordAt(t).index);
     car.frequency.value = hz;
     mod.frequency.value = hz * 3.5;
     modGain.gain.setValueAtTime(hz * 3.5 * (1 + 4 * depth) * Math.min(1.5, magnitude / 2), t);
